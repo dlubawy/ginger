@@ -32,7 +32,7 @@ let
       imageDigest = "sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a";
       hash = "sha256-3NOrK7BrtlCX23qGfDWlsgv3vBYmBLTQKq/4sLp8o8c=";
     };
-    tag = "v${version}";
+    tag = version;
     contents = [
       containerPkgs.dockerTools.caCertificates
       chromiumLauncher
@@ -76,16 +76,17 @@ let
         python3
         ripgrep
         uv
-        zsh
         ;
     });
     includeStorePaths = false;
     extraCommands = ''
-      mkdir -p ./bin ./libexec
+      mkdir -p ./bin ./libexec ./usr/sbin
       cp -r ${containerPkgs.pkgsStatic.bash}/bin/* ./bin
       cp -r ${containerPkgs.pkgsStatic.dbus}/bin/* ./bin
       cp -r ${containerPkgs.pkgsStatic.glib}/bin/* ./bin
+      cp -r ${containerPkgs.pkgsStatic.e2fsprogs}/bin/* ./bin
       cp -r ${containerPkgs.pkgsStatic.dbus}/libexec/* ./libexec
+      ln -sf ../../bin/sshd ./usr/sbin/sshd
       rm ./usr/bin/sandboxd
       rm ./usr/bin/sandboxfs
       rm ./usr/bin/sandboxingress

@@ -27,7 +27,9 @@
         f: nixpkgs.lib.genAttrs supportedSystems (system: f { pkgs = import nixpkgs { inherit system; }; });
     in
     {
-      packages = forEachSupportedSystem ({ pkgs }: (import ./pkgs pkgs.stdenv.hostPlatform.system inputs) pkgs);
+      packages = forEachSupportedSystem (
+        { pkgs }: (import ./pkgs pkgs.stdenv.hostPlatform.system inputs) pkgs
+      );
       checks = forEachSupportedSystem (
         { pkgs }:
         {

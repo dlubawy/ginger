@@ -26,31 +26,21 @@ let
             ;
         };
       };
-    x86_64-darwin = pkgs: {
-      default =
-        let
-          containerPkgs = (
-            import inputs.nixpkgs-unstable {
-              system = "x86_64-linux";
-            }
-          );
-        in
-        pkgs.callPackage ./ginger {
-          inherit pkgs containerPkgs;
-        };
-    };
-    aarch64-linux = pkgs: {
-      default = pkgs.callPackage ./ginger {
-        inherit pkgs;
-        containerPkgs = pkgs;
-      };
+    aarch64-linux = pkgs: rec {
       gondolin = pkgs.callPackage ./gondolin {
         pkgs = (import inputs.nixpkgs-unstable { system = "aarch64-linux"; });
       };
-    };
-    x86_64-linux = pkgs: {
       default = pkgs.callPackage ./ginger {
-        inherit pkgs;
+        inherit pkgs gondolin;
+        containerPkgs = pkgs;
+      };
+    };
+    x86_64-linux = pkgs: rec {
+      gondolin = pkgs.callPackage ./gondolin {
+        pkgs = (import inputs.nixpkgs-unstable { system = "aarch64-linux"; });
+      };
+      default = pkgs.callPackage ./ginger {
+        inherit pkgs gondolin;
         containerPkgs = pkgs;
       };
     };
@@ -61,7 +51,4 @@ if builtins.hasAttr system allPackages then
 else
   # TODO: make this cleaner
   pkgs:
-  allPackages.aarch64-darwin pkgs
-  // allPackages.x86_64-darwin pkgs
-  // allPackages.aarch64-linux pkgs
-  // allPackages.x86_64-linux pkgs
+  allPackages.aarch64-darwin pkgs // allPackages.aarch64-linux pkgs // allPackages.x86_64-linux pkgs

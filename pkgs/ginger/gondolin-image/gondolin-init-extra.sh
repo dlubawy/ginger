@@ -15,19 +15,19 @@ if ! id nixbld1 > /dev/null 2>&1; then
     "nixbld$n"; done
 fi
 cat > /etc/nix/nix.conf << EOF
-experimental-features = nix-command flakes local-overlay-store
+experimental-features = nix-command flakes local-overlay-store read-only-local-store
 trusted-users = root
-store = local-overlay://?lower-store=/.ro-nix&upper-layer=/.rw-nix/store
+store = local-overlay://?upper-layer=/.rw-nix/store&lower-store=/.ro-nix?read-only=true
 EOF
 cat > /root/.bashrc <<EOF
 eval $(/bin/direnv hook bash)
 EOF
 cat > /root/.gitconfig <<EOF
+[safe]
+	directory = *
 [user]
     email = ginger@andrewlubawy.com
     name = Ginger Agent
-[safe]
-	directory = *
 EOF
 
 # Create messagebus user (needed by dbus-daemon)
@@ -56,8 +56,11 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 # We use a filename that sorts *after* chromium.conf so we can append to distro defaults.
 mkdir -p /opt/google/chrome
 mkdir -p /etc/chromium
-ln -s /share/fonts /usr/share/fonts
-ln -s "$(readlink /usr/bin/chromium || echo "/usr/bin/chromium")" /opt/google/chrome/chrome
+# -fn: idempotent. On a resumed disk these symlinks already exist from the
+# previous boot, and plain `ln -s` fails under the init script's `set -eu`,
+# which kills init before sandboxd starts (guest never becomes ready).
+ln -sfn /share/fonts /usr/share/fonts
+ln -sfn "$(readlink -f /usr/bin/chromium || echo "/usr/bin/chromium")" /opt/google/chrome/chrome
 rm -f /etc/chromium/zz-gondolin.conf
 cat > /etc/chromium/zz-gondolin.conf <<'EOF'
 # Appended to any distro defaults from other .conf files

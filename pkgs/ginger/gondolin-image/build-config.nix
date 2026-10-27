@@ -12,10 +12,11 @@ pkgs.writeTextFile {
       },
       "rootfs": {
         "label": "gondolin-root",
-        "sizeMb": 5000
+        "sizeMb": 8000
       },
       "oci": {
-        "image": "localhost/gondolin-image:v${version}"
+        "image": "localhost/gondolin-image:${version}",
+        "runtime": "podman"
       },
       "init": {
         "rootfsInitExtra": "gondolin-init-extra.sh"

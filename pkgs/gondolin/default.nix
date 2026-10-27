@@ -1,12 +1,12 @@
 { pkgs, ... }:
 pkgs.stdenv.mkDerivation (finalAttr: {
   pname = "gondolin";
-  version = "0.13.0";
+  version = "0.14.0";
   src = pkgs.fetchFromGitHub {
     owner = "earendil-works";
     repo = "gondolin";
     rev = "v${finalAttr.version}";
-    hash = "sha256-zxcP/S9Z4ofke1aligdqEYEEUwyjywyphXgoqyV/Mfs=";
+    hash = "sha256-sOEHON0LkUtrZQSIyZJ8sxqGK7VxxRIqdy3uh/VD1p8=";
   };
   nativeBuildInputs = (
     builtins.attrValues {
@@ -26,7 +26,7 @@ pkgs.stdenv.mkDerivation (finalAttr: {
   pnpmDeps = pkgs.fetchPnpmDeps {
     inherit (finalAttr) pname version src;
     pnpm = pkgs.pnpm_12;
-    hash = "sha256-6qdzwqch2fvVw+paNCQ1Nk4w20dZ5NuWS8dZLRc5CTc=";
+    hash = "sha256-3M/5JgIrjPYfcz+Ty1WnvQbUBuGj1hhbvQkRmTKr0IU=";
     fetcherVersion = 4;
   };
   buildPhase = ''
