@@ -1,0 +1,30 @@
+{
+  "python": {
+    "extensions": [".py"],
+    "formatter": "nix run nixpkgs#ruff -- format"
+  },
+  "javascript": {
+    "extensions": [".js", ".jsx", ".mjs"],
+    "formatter": "nix run nixpkgs#prettier -- --write"
+  },
+  "typescript": {
+    "extensions": [".ts", ".tsx", ".mts"],
+    "formatter": "nix run nixpkgs#prettier -- --write"
+  },
+  "json": {
+    "extensions": [".json"],
+    "formatter": "nix run nixpkgs#prettier -- --write"
+  },
+  "yaml": {
+    "extensions": [".yaml", ".yml"],
+    "formatter": "nix run nixpkgs#prettier -- --write"
+  },
+  "markdown": {
+    "extensions": [".md", ".mdx"],
+    "formatter": "nix run nixpkgs#prettier -- --write"
+  },
+  "rust": {
+    "extensions": [".rs"],
+    "formatter": "nix run nixpkgs#cargo -- fmt"
+  }
+}
