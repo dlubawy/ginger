@@ -63,6 +63,7 @@ let
         direnv
         fd
         fontconfig
+        git
         gnused
         gondolin
         gsettings-desktop-schemas
@@ -75,6 +76,7 @@ let
         python3
         ripgrep
         uv
+        zsh
         ;
     });
     includeStorePaths = false;

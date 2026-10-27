@@ -9,7 +9,7 @@
           "id": "unsloth/Qwen3.8-27B-GGUF:UD-Q6_K_XL",
           "name": "Qwen3.8 27B",
           "maxTokens": 32768,
-          "contextWindow": 262144,
+          "contextWindow": 128000,
           "reasoning": true,
           "input": ["text", "image"],
           "compat": { "supportsDeveloperRole": true }

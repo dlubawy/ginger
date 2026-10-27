@@ -50,7 +50,7 @@ in
       direnvAllow=""
       # snap=""
       gondolinEnvOpts=("--env" "GINGER_VERSION=${version}")
-      gondolinVMOpts=("--mount-hostfs" "/nix/store:/.ro-nix/store:ro" "--tcp-map" "unsloth.local=127.0.0.1:8888")
+      gondolinVMOpts=("--mount-hostfs" "/nix/store:/.ro-nix/nix/store:ro" "--tcp-map" "unsloth.local=127.0.0.1:8888")
       positionalArgs=()
       while [ $# -gt 0 ]; do
         case "$1" in
@@ -157,6 +157,10 @@ in
         printf "Starting gondolin VM session..."
         gondolin bash "''${gondolinVMOpts[@]}" "''${gondolinEnvOpts[@]}" > /dev/null &
         gondolinPid="$!"
+        if [ -z "$gondolinPid" ]; then
+          printf "\rFailed to start VM."
+          return 1
+        fi
         printf "\rdone...........................\n\n"
         sleep 2
         read -r gingerSession < <(jq -s -r '.[] | select(.pid | contains('"$gondolinPid"')) | .id' "$HOME"/.cache/gondolin/sessions/*.json)
@@ -165,15 +169,18 @@ in
       fi
 
       if [ -n "$direnvAllow" ]; then
-        gondolin attach "''${gondolinEnvOpts[@]}" "$gingerSession" -- direnv allow
+        gondolin exec --sock "$gingerSession" \
+          --cmd rm --arg -rf --arg ./.direnv "''${gondolinEnvOpts[@]}" \
+          --cmd direnv --arg allow "''${gondolinEnvOpts[@]}"
       fi
 
       if [ -n "$stop" ]; then
         gondolin exec --sock "$gingerSession" -- poweroff -f
+        return 0
       elif [ -n "$agentExec" ]; then
-        gondolin exec --sock "$gingerSession" "''${gondolinVMOpts[@]}" "''${gondolinEnvOpts[@]}" -- "$*"
+        gondolin exec --sock "$gingerSession" "''${gondolinEnvOpts[@]}" -- "$*"
       elif [ -n "$runPi" ]; then
-        gondolin attach "''${gondolinEnvOpts[@]}" "$gingerSession" -- /bin/pi
+        gondolin attach "''${gondolinEnvOpts[@]}" "$gingerSession" -- direnv exec . /bin/pi
       else
         gondolin attach "''${gondolinEnvOpts[@]}" "$gingerSession"
       fi
@@ -182,6 +189,15 @@ in
         podman image rm gondolin-image:v${version}
         gondolin image rm "$GONDOLIN_DEFAULT_IMAGE"
       fi
+
+      read -r -n 1 -p "Exit VM? [y/N] " stop
+      printf "\n"
+      case $stop in
+        [yY]*)
+          gondolin exec --sock "$gingerSession" -- poweroff -f
+          return 0
+        ;;
+      esac
     '';
   };
 }

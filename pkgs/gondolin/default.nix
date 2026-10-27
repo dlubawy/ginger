@@ -15,6 +15,7 @@ pkgs.stdenv.mkDerivation (finalAttr: {
         pnpmConfigHook
         pnpm_12
         qemu
+        lz4
         makeWrapper
         zig
         uv
@@ -46,7 +47,7 @@ pkgs.stdenv.mkDerivation (finalAttr: {
     chmod +x $out/lib/node_modules/@gondolin/host/dist/bin/gondolin.js
     makeWrapper ${pkgs.nodejs}/bin/node $out/bin/gondolin \
       --add-flags $out/lib/node_modules/@gondolin/host/dist/bin/gondolin.js \
-      --prefix PATH : "${pkgs.qemu}/bin" \
+      --prefix-each PATH : "${pkgs.qemu}/bin:${pkgs.lz4.out}/bin" \
       --prefix NODE_PATH : $out/lib/node_modules/@gondolin/node_modules
 
     mkdir -p $out/usr/bin

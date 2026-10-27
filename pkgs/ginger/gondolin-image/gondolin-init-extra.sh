@@ -2,12 +2,11 @@ mkdir -p /.rw-nix/store
 mkdir -p /.rw-nix/workdir
 mkdir -p /nix/store
 mount -t overlay overlay \
-    -o lowerdir="/.ro-nix/store" \
+    -o lowerdir="/.ro-nix/nix/store" \
     -o upperdir="/.rw-nix/store" \
     -o workdir="/.rw-nix/workdir" \
     /nix/store
 mkdir -p /etc/nix
-chmod 777 /dev/null
 cat /etc/ssl/cert.pem /etc/gondolin/mitm/ca.crt > /etc/nix/cert.pem
 if ! id nixbld1 > /dev/null 2>&1; then
   addgroup -S nixbld 2>/dev/null || true
@@ -18,9 +17,17 @@ fi
 cat > /etc/nix/nix.conf << EOF
 experimental-features = nix-command flakes local-overlay-store
 trusted-users = root
+store = local-overlay://?lower-store=/.ro-nix&upper-layer=/.rw-nix/store
 EOF
 cat > /root/.bashrc <<EOF
 eval $(/bin/direnv hook bash)
+EOF
+cat > /root/.gitconfig <<EOF
+[user]
+    email = ginger@andrewlubawy.com
+    name = Ginger Agent
+[safe]
+	directory = *
 EOF
 
 # Create messagebus user (needed by dbus-daemon)
@@ -57,3 +64,6 @@ cat > /etc/chromium/zz-gondolin.conf <<'EOF'
 CHROMIUM_FLAGS="$CHROMIUM_FLAGS --headless --no-sandbox --disable-gpu --ignore-certificate-errors --no-first-run --no-default-browser-check"
 EOF
 log "[init] configured default chromium flags"
+
+chown root:root /dev/null
+chmod 666 /dev/null
