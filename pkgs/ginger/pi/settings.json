@@ -11,6 +11,6 @@
   "defaultModel": "Qwen3.8-27B-GGUF:UD-Q6_K_XL",
   "compaction": {
     "enabled": true,
-    "reserveTokens": 40960
+    "reserveTokens": 32000
   }
 }

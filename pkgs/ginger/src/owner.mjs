@@ -8,6 +8,7 @@ import path from "node:path";
 import { VERSION, checkpointDir, fail, logDir, sdk } from "./config.mjs";
 import { makeVmOptions, parseListenSpec } from "./spec.mjs";
 import { Step, isAlive, run, tail, waitFor, waitForFile } from "./ui.mjs";
+import { writeCheckpointMeta } from "./checkpoints.mjs";
 import {
   activeLifecycleOp,
   readSessionAccess,
@@ -290,10 +291,7 @@ export async function snapshotSession(session, spec, snapLabel = null) {
     spec: { ...spec, label },
     createdAt: new Date().toISOString(),
   };
-  // Mode 0600: the embedded spec may carry secret values and passphrases.
-  fs.writeFileSync(`${meta.path}.json`, JSON.stringify(meta, null, 2), {
-    mode: 0o600,
-  });
+  writeCheckpointMeta(meta);
   step.succeed(`snapshot saved: ${meta.path}`);
   // Snapshotting stops the session; drop its lease dir as well.
   removeSessionLeases(session.id);

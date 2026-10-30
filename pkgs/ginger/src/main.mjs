@@ -20,7 +20,17 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { fail, sdk } from "./config.mjs";
+import {
+  BUILD_CONFIG,
+  IMAGE_TAR,
+  SDK_PATH,
+  VERSION,
+  cacheDir,
+  checkpointDir,
+  fail,
+  logDir,
+  sdk,
+} from "./config.mjs";
 import {
   ensureContainerImage,
   ensureVmImage,
@@ -78,6 +88,8 @@ Usage:
   ginger <command> [options]
 
 Commands:
+  env                           Print the ginger environment as JSON (for
+                                programmatic use; not meant for humans)
   ls                            List active sessions and saved snapshots
   stop [SESSION]                Gracefully shut a session down (picker when
                                 omitted)
@@ -123,7 +135,10 @@ Options:
                                sshAllowHosts, sshAgent, sshKnownHosts,
                                sshCredentials, disableWebSockets, ssh,
                                listen, direnv). CLI flags take precedence
-                               over the profile
+                               over the profile. Without --profile, a
+                               project-local <workspace>/.pi/ginger.json is
+                               used automatically when present (this is how
+                               the pi extension customizes its VM).
     -d, --direnv               Allow direnv in workspace
     -l, --listen [ADDR]        Start an ingress gateway (HOST:PORT; default
                                127.0.0.1 with an ephemeral port)
@@ -186,6 +201,7 @@ function needValue(argv, i, flag) {
 }
 
 const COMMANDS = {
+  env: "env",
   ls: "ls",
   list: "ls",
   stop: "stop",
@@ -546,6 +562,29 @@ async function commandRename(opts) {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * `ginger env` — machine-readable description of this ginger install: where
+ * the sources live and which environment the wrapper set. Lets other tools
+ * (the pi extension) import ginger's modules in-process with a matching
+ * version, SDK path and image configuration.
+ */
+function commandEnv() {
+  console.log(
+    JSON.stringify({
+      srcDir: path.dirname(path.resolve(process.argv[1])),
+      version: VERSION,
+      sdkPath: SDK_PATH,
+      imageTar: IMAGE_TAR,
+      buildConfig: BUILD_CONFIG,
+      defaultImage: process.env.GONDOLIN_DEFAULT_IMAGE ?? null,
+      vmm: process.env.GONDOLIN_VMM ?? "qemu",
+      cacheDir,
+      checkpointDir,
+      logDir,
+    }),
+  );
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === "--owner") return runOwner();
@@ -555,6 +594,8 @@ async function main() {
     console.log(USAGE.trim());
     return;
   }
+  // Pure metadata — answer before any registry access or image checks.
+  if (opts.command === "env") return commandEnv();
 
   // Sweep lease files left behind by clients that died without cleanup, and
   // drop session dirs (spec.json & co.) for sessions that are no longer

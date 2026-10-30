@@ -69,28 +69,33 @@ export function sanitizeName(name) {
   return cleaned.slice(0, 64);
 }
 
-export function makeLabel({ ws = null, name = null } = {}) {
+export function makeLabel({ ws = null, name = null, pi = null } = {}) {
   const params = new URLSearchParams();
   if (ws) params.set("ws", ws);
   if (name) params.set("name", sanitizeName(name));
+  // pi= links the session to a pi agent session id. Only set for sessions
+  // created by the pi extension, so it can find and resume its own VM.
+  if (pi) params.set("pi", String(pi));
   const q = params.toString();
   return q ? `${LABEL_PREFIX}?${q}` : LABEL_PREFIX;
 }
 
-/** Parse the ws=/name= parts of a ginger label (v2 or legacy colon form). */
+/** Parse the ws=/name=/pi= parts of a ginger label (v2 or legacy form). */
 export function parseLabel(label) {
-  const out = { ws: null, name: null };
+  const out = { ws: null, name: null, pi: null };
   const s = String(label ?? "");
   const qIdx = s.indexOf("?");
   if (qIdx >= 0) {
     for (const [k, v] of new URLSearchParams(s.slice(qIdx + 1))) {
       if (k === "ws") out.ws = v;
       else if (k === "name") out.name = v;
+      else if (k === "pi") out.pi = v;
     }
   } else {
     for (const part of s.split(":").slice(1)) {
       if (part.startsWith("ws=")) out.ws = part.slice(3);
       else if (part.startsWith("name=")) out.name = part.slice(5);
+      else if (part.startsWith("pi=")) out.pi = part.slice(3);
     }
   }
   return out;
@@ -99,7 +104,7 @@ export function parseLabel(label) {
 /** Replace the name= part of a label, or drop it when name is null. */
 export function setLabelName(label, name) {
   const cur = parseLabel(label);
-  return makeLabel({ ws: cur.ws, name });
+  return makeLabel({ ws: cur.ws, name, pi: cur.pi });
 }
 
 /** Human-readable form for display (decoded values, no percent-encoding). */
@@ -405,35 +410,26 @@ function requireStringArray(value, what) {
 // Spec assembly
 // ---------------------------------------------------------------------------
 
-function unslothKey() {
-  try {
-    const auth = JSON.parse(
-      fs.readFileSync(
-        path.join(os.homedir(), ".pi", "agent", "auth.json"),
-        "utf8",
-      ),
-    );
-    if (auth?.unsloth?.key) {
-      console.error(paint.warn("⚠ using unsloth API key in VM"));
-      return auth.unsloth.key;
-    }
-  } catch {
-    // no auth file — fine
-  }
-  return null;
-}
-
 /**
  * Build the session spec from CLI options and an optional profile file.
  * Single-valued options: CLI flag wins over the file. List-valued options:
  * file entries first, CLI entries appended. Built-in defaults (the /nix
- * mount, unsloth.local mapping, GINGER_VERSION) are always applied on top.
+ * mount, GINGER_VERSION) are always applied on top.
  */
 export async function buildSpec(opts) {
-  const file = opts.profile ? loadProfileFile(profilePath(opts.profile)) : {};
-
   // -- cwd: --cwd wins; else the profile file; else the workspace default.
   const wsPath = opts.workspace ? path.resolve(opts.workspace) : null;
+
+  // Profile file: an explicit --profile name, or a project-local
+  // <workspace>/.pi/ginger.json when present (how the pi extension
+  // customizes the VM for a checkout).
+  let file = {};
+  if (opts.profile) {
+    file = loadProfileFile(profilePath(opts.profile));
+  } else if (wsPath) {
+    const autoProfile = path.join(wsPath, ".pi", "ginger.json");
+    if (fs.existsSync(autoProfile)) file = loadProfileFile(autoProfile);
+  }
   const wsName = wsPath ? path.basename(wsPath) : null;
   let cwd = opts.cwd ?? (typeof file.cwd === "string" ? file.cwd : null);
   if (cwd !== null && !cwd.startsWith("/"))
@@ -603,9 +599,13 @@ export async function buildSpec(opts) {
   );
 
   const spec = {
-    label: makeLabel({ ws: wsPath, name: opts.name ?? null }),
+    label: makeLabel({
+      ws: wsPath,
+      name: opts.name ?? null,
+      pi: opts.piSession ?? null,
+    }),
     mounts: [{ host: "/nix", guest: "/.ro-nix/nix", ro: true }],
-    tcp: ["unsloth.local=127.0.0.1:8888"],
+    tcp: [],
     env,
     cwd,
     listen,
@@ -627,8 +627,6 @@ export async function buildSpec(opts) {
   if (wsPath) spec.mounts.push({ host: wsPath, guest: `/workspace/${wsName}` });
   spec.env.unshift(`GINGER_VERSION=${VERSION}`);
   for (const s of secrets) spec.env.push(`${s.name}=${s.placeholder}`);
-  const key = unslothKey();
-  if (key) spec.env.push(`UNSLOTH_API_KEY=${key}`);
   return spec;
 }
 

@@ -71,3 +71,13 @@ export function removeCheckpoints(checkpoints) {
     fs.rmSync(`${m.path}.json`, { force: true });
   }
 }
+
+/**
+ * Write a checkpoint's metadata sidecar. The embedded spec may carry secret
+ * values and passphrases, so the file is mode 0600.
+ */
+export function writeCheckpointMeta(meta) {
+  fs.writeFileSync(`${meta.path}.json`, JSON.stringify(meta, null, 2), {
+    mode: 0o600,
+  });
+}
