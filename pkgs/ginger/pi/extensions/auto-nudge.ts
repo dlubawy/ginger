@@ -39,7 +39,7 @@ import type { Model } from "@earendil-works/pi-ai";
 // ---------------------------------------------------------------------------
 
 const MAX_NUDGES = 3;
-const NUDGE_TEXT = "Continue your work.";
+const NUDGE_TEXT = "[Automation: /etc/pi/agent/extensions/auto-nudge.ts]\n[Incomplete work detected]\nContinue your work.";
 const EVALUATION_WINDOW = 3; // how many recent assistant messages to inspect
 
 // Classifier settings. The /systemone endpoint has a hard 1024-token context
