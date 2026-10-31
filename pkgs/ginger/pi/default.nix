@@ -1,76 +1,27 @@
-{ pkgs, ... }:
+{ pkgs, version }:
 let
-  inherit (pkgs) writeTextFile symlinkJoin lib;
-  piHome = "/etc/pi";
-  piConfig = writeTextFile {
-    name = "piConfig";
-    text = (builtins.readFile ./settings.json);
-    destination = "${piHome}/agent/settings.json";
-  };
-  piModels = writeTextFile {
-    name = "piModels";
-    text = (builtins.readFile ./models.json);
-    destination = "${piHome}/agent/models.json";
-  };
-  piFormatters = writeTextFile {
-    name = "piFormatters";
-    text = (builtins.readFile ./formatters.json);
-    destination = "${piHome}/agent/formatters.json";
-  };
-  piThemes = pkgs.stdenv.mkDerivation {
-    name = "themes";
-    src = lib.fileset.toSource {
-      root = ./.;
-      fileset = ./themes;
-    };
-    postInstall = ''
-      mkdir -p $out${piHome}/agent
-      cp -R ./themes $out${piHome}/agent/themes
-    '';
-  };
-  piSkills = pkgs.stdenv.mkDerivation {
-    name = "skills";
-    src = lib.fileset.toSource {
-      root = ./.;
-      fileset = ./skills;
-    };
-    postInstall = ''
-      mkdir -p $out${piHome}/agent
-      cp -R ./skills $out${piHome}/agent/skills
-    '';
-  };
-  piPrompts = pkgs.stdenv.mkDerivation {
-    name = "prompts";
-    src = lib.fileset.toSource {
-      root = ./.;
-      fileset = ./prompts;
-    };
-    postInstall = ''
-      mkdir -p $out${piHome}/agent
-      cp -R ./prompts $out${piHome}/agent/prompts
-    '';
-  };
-  piExtensions = pkgs.stdenv.mkDerivation {
-    name = "extensions";
-    src = lib.fileset.toSource {
-      root = ./.;
-      fileset = ./extensions;
-    };
-    postInstall = ''
-      mkdir -p $out${piHome}/agent
-      cp -R ./extensions $out${piHome}/agent/extensions
-    '';
-  };
+  inherit (pkgs) lib;
+  # Directory trees are taken as filesets so untracked files (editor cruft,
+  # OS metadata) don't break the build. Note each store path wraps the tree
+  # in a directory of its own name, hence the '/<name>' on the copies below.
+  extensions = lib.fileset.toSource { root = ./.; fileset = ./extensions; };
+  skills = lib.fileset.toSource { root = ./.; fileset = ./skills; };
+  prompts = lib.fileset.toSource { root = ./.; fileset = ./prompts; };
+  themes = lib.fileset.toSource { root = ./.; fileset = ./themes; };
 in
-symlinkJoin {
-  name = "piHome";
-  paths = [
-    piConfig
-    piFormatters
-    piThemes
-    piModels
-    piPrompts
-    piSkills
-    piExtensions
-  ];
-}
+# The ginger-built pi agent configuration, laid out as etc/pi/agent so the
+# same output can be dropped into the gondolin image at /etc/pi/agent and
+# installed onto a host at ~/.pi/agent (see ../default.nix's pi wrapper).
+pkgs.runCommand "pi-agent-config-${version}" { } ''
+  mkdir -p $out/etc/pi/agent
+  install -m 0644 ${./settings.json}    $out/etc/pi/agent/settings.json
+  install -m 0644 ${./models.json}      $out/etc/pi/agent/models.json
+  install -m 0644 ${./formatters.json}  $out/etc/pi/agent/formatters.json
+  cp -r ${extensions}/extensions $out/etc/pi/agent/extensions
+  cp -r ${skills}/skills         $out/etc/pi/agent/skills
+  cp -r ${prompts}/prompts       $out/etc/pi/agent/prompts
+  cp -r ${themes}/themes         $out/etc/pi/agent/themes
+  # Sentinel: the host wrapper compares this against
+  # ~/.pi/agent/.ginger-version to decide when to offer an update.
+  echo "${version}" >$out/etc/pi/agent/.ginger-version
+''

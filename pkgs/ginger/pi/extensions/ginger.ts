@@ -26,6 +26,29 @@
  *     (in-memory sessions are closed without a snapshot). Any earlier
  *     snapshots of the same pi session are removed, so there is at most one
  *     per session id.
+ *   - Owner-only access features from the spec (ingress via `listen`, ssh,
+ *     and `direnv allow` in the guest) are applied after create AND resume,
+ *     exactly as the ginger CLI's owner process does: ingress listeners are
+ *     host-side so they die with their owner, and direnv's .direnv state is
+ *     a per-boot tmpfs — both must be re-established on every start.
+ *   - Tool commands run non-login (`bash -c`): a login shell would re-read
+ *     /etc/profile, which unconditionally resets PATH and would clobber any
+ *     injected environment. Instead the login-shell environment (profiles,
+ *     profile.d, nix-profile PATH, locale) is captured ONCE at VM start and
+ *     frozen, so each command sees exactly: login baseline + direnv env +
+ *     pi session vars, with nothing re-evaluated per command.
+ *   - With `direnv` enabled, the .envrc is additionally evaluated ONCE at VM
+ *     start (`direnv exec . env -0`, like `ginger --pi` wraps pi itself) and
+ *     the resulting environment is frozen and layered over the login baseline
+ *     in every tool exec. Per-command `direnv exec` wrapping is deliberately
+ *     avoided: direnv re-checks (and can re-evaluate a nix devshell — minutes
+ *     of work) on every invocation whenever watched files change. While the
+ *     start-time evaluation runs, a status line ticks with elapsed seconds so
+ *     pi doesn't look stalled. The user can re-evaluate at will with
+ *     /reload-direnv.
+ *   - The ingress URL chosen for `listen: true` (ephemeral port) is surfaced
+ *     in the start notification and the system-prompt cwd line, and recorded
+ *     in ~/.cache/ginger/sessions/<id>/access.json.
  *
  * Environment isolation:
  *   - Tool commands run in the guest with the VM's own environment (image
@@ -35,7 +58,10 @@
  *     the exec env as a copy of it, which would leak host secrets into the
  *     sandbox); only pi's own session variables (PI_SESSION_ID,
  *     PI_SESSION_FILE, PI_PROVIDER, PI_MODEL, PI_REASONING_LEVEL) are added,
- *     mirroring pi's native bash tool.
+ *     mirroring pi's native bash tool. Layered below those session vars:
+ *     the frozen login-shell environment (always), and the frozen direnv
+ *     environment when `direnv` is enabled (captured once at VM start,
+ *     refreshed by /reload-direnv).
  *
  * Environment:
  *   - GINGER_PI_SNAPSHOT  Start this pi session's VM from an existing ginger
@@ -198,12 +224,22 @@ interface GingerCheckpointsModule {
 
 interface GingerSessionsModule {
   writeSessionSpec(sessionId: string, spec: Record<string, any>): void;
+  readSessionAccess(sessionId: string): Record<string, any> | null;
+}
+
+interface GingerOwnerModule {
+  applyOwnerFeatures(
+    vm: GondolinVM,
+    spec: Record<string, any>,
+    hooks?: { log?: (msg: string) => void; error?: (msg: string) => void },
+  ): Promise<void>;
 }
 
 interface GingerModules {
   spec: GingerSpecModule;
   checkpoints: GingerCheckpointsModule;
   sessions: GingerSessionsModule;
+  owner: GingerOwnerModule;
   sdk: GondolinSdk;
   /** Wrapper environment (version etc.); null in GINGER_SRC dev mode. */
   envInfo: GingerEnvInfo | null;
@@ -327,14 +363,22 @@ async function doLoadGinger(): Promise<GingerModules | null> {
   // processes and other extensions don't mistake this pi process for a
   // ginger guest.
   try {
-    const [spec, checkpoints, sessions, sdk] = await Promise.all([
+    const [spec, checkpoints, sessions, owner, sdk] = await Promise.all([
       import(`${base}spec.mjs`),
       import(`${base}checkpoints.mjs`),
       import(`${base}sessions.mjs`),
+      import(`${base}owner.mjs`),
       import(pathToFileURL(process.env.GONDOLIN_SDK).href),
     ]);
     if (!sdk.VM || !sdk.VmCheckpoint) return null;
-    return { spec, checkpoints, sessions, sdk: sdk as GondolinSdk, envInfo };
+    return {
+      spec,
+      checkpoints,
+      sessions,
+      owner: owner as GingerOwnerModule,
+      sdk: sdk as GondolinSdk,
+      envInfo,
+    };
   } catch {
     return null;
   } finally {
@@ -740,6 +784,85 @@ function piSessionVars(ctx: ExtensionContext | undefined): Record<string, string
   return vars;
 }
 
+/**
+ * Parse a base64-encoded NUL-separated `env -0` dump into a plain map.
+ * Volatile vars that are meaningless outside their original shell (`_`)
+ * are dropped.
+ */
+function parseEnvDump(stdout: string): Record<string, string> {
+  const raw = Buffer.from(stdout.replace(/\s/g, ""), "base64").toString(
+    "utf8",
+  );
+  const env: Record<string, string> = {};
+  for (const entry of raw.split("\0")) {
+    const eq = entry.indexOf("=");
+    if (eq <= 0) continue;
+    const name = entry.slice(0, eq);
+    if (name === "_") continue;
+    env[name] = entry.slice(eq + 1);
+  }
+  return env;
+}
+
+/** Run a command in the guest whose stdout is an env dump, and parse it. */
+async function captureEnvDump(
+  vm: GondolinVM,
+  argv: string[],
+  cwd: string | undefined,
+  what: string,
+): Promise<Record<string, string>> {
+  // Default (buffer) output mode: the resolved result carries stdout.
+  // `stdout: "pipe"` would stream chunks to .output() only and leave
+  // result.stdout empty — silently producing an empty environment.
+  const result = await vm.exec(argv, cwd ? { cwd } : {});
+  if (result.exitCode !== 0)
+    throw new Error(result.stderr.trim() || `${what} exited ${result.exitCode}`);
+  if (!result.stdout)
+    throw new Error(`${what} produced no output`);
+  return parseEnvDump(result.stdout);
+}
+
+/**
+ * Evaluate the guest .envrc exactly once and return the resulting
+ * environment. `direnv exec` re-checks for changes on every invocation —
+ * in a nix devshell repo that can mean a multi-minute re-evaluation per
+ * command — so we never wrap individual commands in it. Instead this dumps
+ * the activated environment (NUL-separated, base64 to survive string
+ * stdout) and parses it into a plain map that callers inject via the exec
+ * env.
+ */
+async function captureDirenvEnv(
+  vm: GondolinVM,
+  cwd: string,
+): Promise<Record<string, string>> {
+  return captureEnvDump(
+    vm,
+    ["direnv", "exec", ".", "/bin/sh", "-c", "env -0 | base64"],
+    cwd,
+    "direnv exec",
+  );
+}
+
+/**
+ * Capture the guest's LOGIN-shell environment once (what an attached shell
+ * sees: /etc/profile, /etc/profile.d/nix.sh, locale, nix-profile PATH…).
+ * Tool commands run non-login (`bash -c`) so their environment is exactly
+ * what we inject — a login shell would re-read /etc/profile and clobber the
+ * injected PATH (it unconditionally resets it). This capture is cheap:
+ * sourcing profiles never triggers a nix evaluation.
+ */
+async function captureLoginEnv(
+  vm: GondolinVM,
+  shellPath: string,
+): Promise<Record<string, string>> {
+  return captureEnvDump(
+    vm,
+    [shellPath, "-lc", "env -0 | base64"],
+    undefined,
+    "login env capture",
+  );
+}
+
 function createGondolinBashOps(
   vm: GondolinVM,
   paths: GuestPaths,
@@ -764,10 +887,14 @@ function createGondolinBashOps(
           : undefined;
 
       try {
-        const proc = vm.exec([shellPath, "-lc", command], {
+        // Non-login, non-interactive: reads no startup files, so the
+        // injected environment (login baseline + frozen direnv env + pi
+        // session vars) is exactly what the command sees. A login shell
+        // would re-run /etc/profile, which unconditionally resets PATH and
+        // would wipe the devshell.
+        const proc = vm.exec([shellPath, "-c", command], {
           cwd: guestCwd,
-          // Never forward pi's exec env (a copy of the host process.env):
-          // only pi's session vars, on top of the VM's own environment.
+          // Never forward pi's exec env (a copy of the host process.env).
           env: Object.keys(piEnv).length > 0 ? piEnv : undefined,
           signal: controller.signal,
           stdout: "pipe",
@@ -818,6 +945,20 @@ export default function (pi: ExtensionAPI) {
   let vm: GondolinVM | undefined;
   let vmStarting: Promise<GondolinVM> | undefined;
   let vmSpec: Record<string, any> | undefined;
+  /** Ingress URL if the spec enabled `listen` (from the session access state). */
+  let vmIngressUrl: string | undefined;
+  /**
+   * Frozen direnv environment (spec.direnv): captured once at VM start by
+   * evaluating the .envrc, injected into every tool exec. Refreshed by
+   * /reload-direnv. Undefined when direnv is off or capture failed.
+   */
+  let direnvEnv: Record<string, string> | undefined;
+  /**
+   * Login-shell environment captured once at VM start (profile, profile.d,
+   * nix-profile PATH, locale…). Layered under the direnv env and pi session
+   * vars in every tool exec, since commands run non-login (`bash -c`).
+   */
+  let loginEnv: Record<string, string> | undefined;
   let vmPiId: string | undefined;
   let vmOrigin: "fresh" | "resumed" | "seeded" | undefined;
   let shuttingDown = false;
@@ -829,6 +970,10 @@ export default function (pi: ExtensionAPI) {
     cwd: guestCwd,
   });
 
+  /** Standard status-line text for a running VM. */
+  const vmStatusLabel = (id: string) =>
+    `Ginger: ${id.slice(0, 8)} (${vmOrigin ?? "unknown"}, ${guestCwd})`;
+
   function checkpointDir(): string {
     return path.join(
       process.env.GINGER_CACHE_DIR?.trim() ||
@@ -839,7 +984,7 @@ export default function (pi: ExtensionAPI) {
 
   async function startVm(ctx?: ExtensionContext): Promise<GondolinVM> {
     ctx?.ui.setStatus(
-      "gondolin",
+      "ginger",
       ctx.ui.theme.fg("accent", `Ginger: starting VM for ${localCwd}`),
     );
     const g = await loadGinger();
@@ -923,6 +1068,35 @@ export default function (pi: ExtensionAPI) {
       throw new Error("pi is shutting down");
     }
 
+    // Apply the owner-only access features (ingress, ssh) and guest setup
+    // (direnv allow) that the ginger CLI's owner process runs after
+    // create/resume — we hold the same controller connection. This must
+    // happen on every resume too: ingress listeners are host-side (they die
+    // with their owner) and direnv's .direnv state is a per-boot tmpfs.
+    // Best effort: a failing feature is reported but doesn't sink the VM.
+    await gingerCall(() =>
+      g.owner.applyOwnerFeatures(created, spec, {
+        log: (msg) => ctx?.ui.notify(`Ginger: ${msg}`, "info"),
+        error: (msg) => ctx?.ui.notify(`Ginger: ${msg}`, "error"),
+      }),
+    ).catch((err) => {
+      ctx?.ui.notify(
+        `Ginger: access feature setup failed: ${err instanceof Error ? err.message : String(err)}`,
+        "error",
+      );
+    });
+
+    // The ingress URL (when `listen` is enabled) was recorded in the session
+    // access state by applyOwnerFeatures; capture it for the notifications
+    // and the system-prompt line below.
+    try {
+      const access = g.sessions.readSessionAccess(created.id);
+      vmIngressUrl =
+        typeof access?.ingress?.url === "string" ? access.ingress.url : undefined;
+    } catch {
+      vmIngressUrl = undefined;
+    }
+
     vm = created;
     vmSpec = spec;
     vmPiId = piId;
@@ -947,15 +1121,69 @@ export default function (pi: ExtensionAPI) {
       "command -v bash || true",
     ]);
     shellPath = bashProbe.stdout.trim() || "/bin/sh";
+
+    // Capture the login-shell environment once (profiles, profile.d,
+    // nix-profile PATH, locale…). Tool commands run non-login (`bash -c`)
+    // so their env is exactly what we inject; without this baseline they
+    // would lose everything /etc/profile provides. Sourcing profiles never
+    // triggers a nix evaluation, so this is fast.
+    try {
+      loginEnv = await gingerCall(() => captureLoginEnv(created, shellPath));
+    } catch (err) {
+      loginEnv = undefined;
+      ctx?.ui.notify(
+        `Ginger: login env capture failed: ${err instanceof Error ? err.message : String(err)}`,
+        "error",
+      );
+    }
+
+    // With spec.direnv, evaluate the .envrc once now (this is where the
+    // possibly-slow nix devshell evaluation happens — at session start, like
+    // `ginger --pi`, not per command) and freeze the resulting environment
+    // for all tool execs. Best effort: on failure tools run with the plain
+    // VM environment.
+    if (spec.direnv) {
+      // The .envrc evaluation (a nix devshell in particular) can take
+      // minutes. Make it visible: an up-front notification plus a status
+      // line that ticks with elapsed seconds, so pi doesn't look stalled.
+      const evalStartedAt = Date.now();
+      const showEvalStatus = () => {
+        if (!ctx) return;
+        const secs = Math.round((Date.now() - evalStartedAt) / 1000);
+        ctx.ui.setStatus(
+          "ginger",
+          ctx.ui.theme.fg("muted", `Ginger: evaluating .envrc (direnv/nix)… ${secs}s`),
+        );
+      };
+      ctx?.ui.notify(
+        "Ginger: evaluating direnv environment (.envrc) — nix devshells can take a while",
+        "info",
+      );
+      showEvalStatus();
+      const evalTick = setInterval(showEvalStatus, 1000);
+      try {
+        direnvEnv = await gingerCall(() => captureDirenvEnv(created, guestCwd));
+        ctx?.ui.notify(
+          `Ginger: direnv environment loaded (${Object.keys(direnvEnv).length} vars) after ${Math.round((Date.now() - evalStartedAt) / 1000)}s; /reload-direnv to re-evaluate`,
+          "info",
+        );
+      } catch (err) {
+        direnvEnv = undefined;
+        ctx?.ui.notify(
+          `Ginger: direnv env capture failed: ${err instanceof Error ? err.message : String(err)}`,
+          "error",
+        );
+      } finally {
+        clearInterval(evalTick);
+      }
+    }
+
     ctx?.ui.setStatus(
-      "gondolin",
-      ctx.ui.theme.fg(
-        "accent",
-        `Ginger: ${created.id.slice(0, 8)} (${origin}, ${guestCwd})`,
-      ),
+      "ginger",
+      ctx.ui.theme.fg("accent", vmStatusLabel(created.id)),
     );
     ctx?.ui.notify(
-      `Ginger VM ${origin === "fresh" ? "started" : origin === "resumed" ? "resumed from snapshot" : "started from GINGER_PI_SNAPSHOT"}. ${localCwd} is mounted at ${guestWorkspace}; tools run in ${guestCwd}.`,
+      `Ginger VM ${origin === "fresh" ? "started" : origin === "resumed" ? "resumed from snapshot" : "started from GINGER_PI_SNAPSHOT"}. ${localCwd} is mounted at ${guestWorkspace}; tools run in ${guestCwd}.${vmIngressUrl ? ` Ingress: ${vmIngressUrl}` : ""}`,
       "info",
     );
     return created;
@@ -992,22 +1220,30 @@ export default function (pi: ExtensionAPI) {
     vmPiId = undefined;
     vmOrigin = undefined;
     vmStarting = undefined;
+    direnvEnv = undefined;
+    loginEnv = undefined;
     if (!activeVm) return;
-    // Only snapshot sessions that record to a JSONL session file; in-memory
-    // sessions (and pre-first-message ones, which have no file yet) would
-    // leave a snapshot nobody can correlate with a transcript.
+    // Only snapshot sessions that have an actual JSONL transcript on disk.
+    // pi reports the session file path even before it is ever written
+    // (sessions without chat history never create the file), so the path
+    // alone is not enough — checking existence keeps ephemeral sessions from
+    // leaving snapshots nobody can resume.
     const sessionFile = ctx.sessionManager?.getSessionFile?.();
-    if (typeof sessionFile !== "string" || !sessionFile.endsWith(".jsonl")) {
+    if (
+      typeof sessionFile !== "string" ||
+      !sessionFile.endsWith(".jsonl") ||
+      !fs.existsSync(sessionFile)
+    ) {
       try {
         await activeVm.close();
       } catch {
         // best effort
       }
-      ctx.ui.setStatus("gondolin", undefined);
+      ctx.ui.setStatus("ginger", undefined);
       return;
     }
     ctx.ui.setStatus(
-      "gondolin",
+      "ginger",
       ctx.ui.theme.fg("muted", "Ginger: snapshotting"),
     );
     const g = await loadGinger();
@@ -1059,11 +1295,11 @@ export default function (pi: ExtensionAPI) {
       } catch {
         // best effort — the VM is already stopped after a checkpoint
       }
-      ctx.ui.setStatus("gondolin", undefined);
+      ctx.ui.setStatus("ginger", undefined);
     }
   });
 
-  pi.registerCommand("gondolin", {
+  pi.registerCommand("ginger", {
     description: "Show Ginger VM status",
     handler: async (_args, ctx) => {
       const activeVm = await ensureVm(ctx);
@@ -1076,9 +1312,57 @@ export default function (pi: ExtensionAPI) {
           `Guest workspace: ${guestWorkspace}`,
           `Guest cwd: ${guestCwd}`,
           `Shell: ${shellPath}`,
-        ].join("\n"),
+          vmIngressUrl ? `Ingress: ${vmIngressUrl}` : undefined,
+          loginEnv
+            ? `Login env: captured (${Object.keys(loginEnv).length} vars)`
+            : "Login env: NOT captured (tool commands miss /etc/profile defaults)",
+          direnvEnv
+            ? `Direnv: environment loaded (${Object.keys(direnvEnv).length} vars); /reload-direnv to re-evaluate`
+            : undefined,
+        ]
+          .filter((line): line is string => Boolean(line))
+          .join("\n"),
         "info",
       );
+    },
+  });
+
+  pi.registerCommand("reload-direnv", {
+    description:
+      "Re-evaluate the guest .envrc (direnv) and refresh the environment used by tool commands",
+    handler: async (_args, ctx) => {
+      if (!vmSpec?.direnv) {
+        ctx.ui.notify(
+          'Ginger: direnv is not enabled for this VM (set "direnv": true in .pi/ginger.json)',
+          "error",
+        );
+        return;
+      }
+      const activeVm = await ensureVm(ctx);
+      // Re-evaluation can take minutes (nix devshell) — show it in the
+      // status line so pi doesn't look stalled.
+      ctx.ui.setStatus(
+        "ginger",
+        ctx.ui.theme.fg("muted", "Ginger: re-evaluating .envrc (direnv/nix)…"),
+      );
+      try {
+        const env = await gingerCall(() => captureDirenvEnv(activeVm, guestCwd));
+        direnvEnv = env;
+        ctx.ui.notify(
+          `Ginger: direnv environment reloaded (${Object.keys(env).length} vars)`,
+          "info",
+        );
+      } catch (err) {
+        ctx.ui.notify(
+          `Ginger: direnv reload failed: ${err instanceof Error ? err.message : String(err)}`,
+          "error",
+        );
+      } finally {
+        ctx.ui.setStatus(
+          "ginger",
+          ctx.ui.theme.fg("accent", vmStatusLabel(activeVm.id)),
+        );
+      }
     },
   });
 
@@ -1124,7 +1408,11 @@ export default function (pi: ExtensionAPI) {
           activeVm,
           guestPaths(),
           shellPath,
-          piSessionVars(ctx),
+          {
+            ...(loginEnv ?? {}),
+            ...(direnvEnv ?? {}),
+            ...piSessionVars(ctx),
+          },
         ),
       });
       return tool.execute(id, params, signal, onUpdate);
@@ -1168,7 +1456,11 @@ export default function (pi: ExtensionAPI) {
         activeVm,
         guestPaths(),
         shellPath,
-        piSessionVars(ctx),
+        {
+          ...(loginEnv ?? {}),
+          ...(direnvEnv ?? {}),
+          ...piSessionVars(ctx),
+        },
       ),
     };
   });
@@ -1182,7 +1474,7 @@ export default function (pi: ExtensionAPI) {
     } catch {}
     if (!vm) return;
     const localLine = `Current working directory: ${localCwd}`;
-    const guestLine = `Current working directory: ${guestCwd} (Gondolin VM; host workspace mounted at ${guestWorkspace} from ${localCwd})`;
+    const guestLine = `Current working directory: ${guestCwd} (Gondolin VM; host workspace mounted at ${guestWorkspace} from ${localCwd}${vmIngressUrl ? `; ingress: ${vmIngressUrl}` : ""}${direnvEnv ? "; direnv environment active — /reload-direnv re-evaluates the .envrc" : ""})`;
     const systemPrompt = event.systemPrompt.includes(localLine)
       ? event.systemPrompt.replace(localLine, guestLine)
       : `${event.systemPrompt}\n\n${guestLine}`;

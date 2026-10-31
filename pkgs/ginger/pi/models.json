@@ -37,7 +37,7 @@
           "name": "Gemma4 E4B",
           "contextWindow": 128000,
           "reasoning": false,
-          "input": ["text", "image"],
+          "input": ["text", "image"]
         }
       ]
     }

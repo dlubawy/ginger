@@ -8,7 +8,7 @@ let
   inherit (pkgs) writeShellApplication;
 
   version = "0.0.1";
-  piHome = (import ./pi { inherit pkgs; });
+  piHome = (import ./pi { inherit pkgs version; });
   gondolinImage = (
     import ./gondolin-image {
       inherit
@@ -28,6 +28,9 @@ let
   };
 in
 {
+  # Re-exported so the host wrappers in ../default.nix can ship the same
+  # config they prompt users to install.
+  inherit piHome;
   gingerBin = writeShellApplication {
     name = "ginger";
     runtimeInputs = with pkgs; [

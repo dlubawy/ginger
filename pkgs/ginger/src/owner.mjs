@@ -91,6 +91,75 @@ export async function waitForAccess(sessionId, owner, keys) {
   return readSessionAccess(sessionId);
 }
 
+/**
+ * Enable the access features that only the process holding the VM's
+ * controller connection can enable (SSH, ingress) and run the owner-side
+ * guest setup (direnv allow). Both the CLI's owner process and pi's
+ * in-process extension call this after create/resume: ingress listeners
+ * are host-side (they die with their owner) and direnv's .direnv state is
+ * a per-boot tmpfs shadow, so both must be re-applied on every resume.
+ *
+ * Each feature is best-effort; outcomes are recorded in the session access
+ * state for clients to report. `log`/`error` let callers route output (the
+ * pi process has no owner log file).
+ */
+export async function applyOwnerFeatures(
+  vm,
+  spec,
+  { log = console.log, error = console.error } = {},
+) {
+  if (spec.ssh) {
+    try {
+      const access = await vm.enableSsh({
+        user: spec.ssh.user,
+        listenHost: spec.ssh.listen,
+        listenPort: spec.ssh.port,
+      });
+      writeSessionAccess(vm.id, "ssh", {
+        command: access.command,
+        host: access.host,
+        port: access.port,
+        user: access.user,
+      });
+      log(`SSH enabled: ${access.command}`);
+    } catch (err) {
+      writeSessionAccess(vm.id, "ssh", { error: err?.message ?? String(err) });
+      error(`ssh setup failed: ${err?.message ?? err}`);
+    }
+  }
+
+  if (spec.listen) {
+    try {
+      // Older checkpoints may carry the pre-normalization string form.
+      const listen =
+        typeof spec.listen === "string"
+          ? parseListenSpec(spec.listen)
+          : spec.listen;
+      const access = await vm.enableIngress({
+        listenHost: listen.host,
+        listenPort: listen.port,
+        allowWebSockets: spec.disableWebSockets ? false : undefined,
+      });
+      writeSessionAccess(vm.id, "ingress", { url: access.url });
+      log(`Ingress enabled: ${access.url}`);
+    } catch (err) {
+      writeSessionAccess(vm.id, "ingress", {
+        error: err?.message ?? String(err),
+      });
+      error(`ingress setup failed: ${err?.message ?? err}`);
+    }
+  }
+
+  if (spec.direnv && spec.cwd) {
+    try {
+      await vm.exec("direnv allow", { cwd: spec.cwd });
+      log("direnv allowed");
+    } catch (err) {
+      error(`direnv allow failed: ${err.message}`);
+    }
+  }
+}
+
 export async function runOwner() {
   const spec = JSON.parse(process.env.GINGER_OWNER_SPEC ?? "");
   if (!spec?.label) fail("missing owner spec");
@@ -123,56 +192,7 @@ export async function runOwner() {
   // Access features that only the owner can enable (it holds the sandbox
   // controller connection). The client cannot see this process's stdout, so
   // each outcome is recorded for it to report to the user.
-  if (spec.ssh) {
-    try {
-      const access = await vm.enableSsh({
-        user: spec.ssh.user,
-        listenHost: spec.ssh.listen,
-        listenPort: spec.ssh.port,
-      });
-      writeSessionAccess(vm.id, "ssh", {
-        command: access.command,
-        host: access.host,
-        port: access.port,
-        user: access.user,
-      });
-      console.log(`SSH enabled: ${access.command}`);
-    } catch (err) {
-      writeSessionAccess(vm.id, "ssh", { error: err?.message ?? String(err) });
-      console.error(`ssh setup failed: ${err?.message ?? err}`);
-    }
-  }
-
-  if (spec.listen) {
-    // Older checkpoints may carry the pre-normalization string form.
-    const listen =
-      typeof spec.listen === "string"
-        ? parseListenSpec(spec.listen)
-        : spec.listen;
-    try {
-      const access = await vm.enableIngress({
-        listenHost: listen.host,
-        listenPort: listen.port,
-        allowWebSockets: spec.disableWebSockets ? false : undefined,
-      });
-      writeSessionAccess(vm.id, "ingress", { url: access.url });
-      console.log(`Ingress enabled: ${access.url}`);
-    } catch (err) {
-      writeSessionAccess(vm.id, "ingress", {
-        error: err?.message ?? String(err),
-      });
-      console.error(`ingress setup failed: ${err?.message ?? err}`);
-    }
-  }
-
-  if (spec.direnv && spec.cwd) {
-    try {
-      await vm.exec("direnv allow", { cwd: spec.cwd });
-      console.log("direnv allowed");
-    } catch (err) {
-      console.error(`direnv allow failed: ${err.message}`);
-    }
-  }
+  await applyOwnerFeatures(vm, spec);
 
   // Hold the session until the guest shuts down (lifecycle shutdown, crash).
   // Log any failure — a silent exit here used to leave only an empty owner
