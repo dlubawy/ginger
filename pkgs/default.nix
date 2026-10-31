@@ -6,21 +6,28 @@ let
       let
         unstablePkgs = (import inputs.nixpkgs-unstable { system = "aarch64-darwin"; });
         containerPkgs =
-          (import inputs.nixpkgs-unstable {
-            system = "aarch64-linux";
-          })
+          let
+            containerPkgs = (import inputs.nixpkgs-unstable { system = "aarch64-linux"; });
+          in
+          containerPkgs
           // {
             gondolin = pkgs.callPackage ./gondolin {
-              pkgs = (import inputs.nixpkgs-unstable { system = "aarch64-linux"; });
+              pkgs = containerPkgs;
+            };
+            playwright-cli = pkgs.callPackage ./playwright-cli {
+              pkgs = containerPkgs;
             };
           };
         gondolin = pkgs.callPackage ./gondolin {
           pkgs = unstablePkgs;
         };
         pi = unstablePkgs.pi-coding-agent;
+        playwright-cli = pkgs.callPackage ./playwright-cli {
+          pkgs = unstablePkgs;
+        };
       in
       {
-        inherit gondolin;
+        inherit gondolin playwright-cli;
         default = pkgs.callPackage ./ginger {
           inherit
             pkgs
@@ -38,9 +45,12 @@ let
           pkgs = (import inputs.nixpkgs-unstable { system = "aarch64-linux"; });
         };
         pi = unstablePkgs.pi-coding-agent;
+        playwright-cli = pkgs.callPackage ./playwright-cli {
+          pkgs = unstablePkgs;
+        };
       in
       {
-        inherit gondolin;
+        inherit gondolin playwright-cli;
         default = pkgs.callPackage ./ginger {
           inherit pkgs gondolin pi;
           containerPkgs = pkgs;
@@ -54,9 +64,12 @@ let
           pkgs = (import inputs.nixpkgs-unstable { system = "x86_64-linux"; });
         };
         pi = unstablePkgs.pi-coding-agent;
+        playwright-cli = pkgs.callPackage ./playwright-cli {
+          pkgs = unstablePkgs;
+        };
       in
       {
-        inherit gondolin;
+        inherit gondolin playwright-cli;
         default = pkgs.callPackage ./ginger {
           inherit pkgs gondolin pi;
           containerPkgs = pkgs;

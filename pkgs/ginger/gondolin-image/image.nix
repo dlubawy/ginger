@@ -25,6 +25,13 @@ let
     text = (builtins.readFile ./run-inner-vm.mjs);
     destination = "/run-inner-vm.mjs";
   };
+  # User-facing helper to restore/remove the dashboard's ingress route after
+  # hand-editing /etc/gondolin/listeners (also used by init).
+  playwrightDashboard = containerPkgs.writeShellApplication {
+    name = "playwright-dashboard";
+    runtimeInputs = (builtins.attrValues { inherit (containerPkgs) curl gnugrep; });
+    text = (builtins.readFile ./playwright-dashboard.sh);
+  };
   image = dockerTools.buildLayeredImage {
     name = "gondolin-image";
     fromImage = dockerTools.pullImage {
@@ -36,17 +43,7 @@ let
     contents = [
       containerPkgs.dockerTools.caCertificates
       chromiumLauncher
-      (containerPkgs.writeShellApplication {
-        name = "playwright-cli";
-        runtimeInputs = (builtins.attrValues { inherit (containerPkgs) nodejs; });
-        text = ''
-          npmRoot="$(${containerPkgs.nodejs}/bin/npm root -g)"
-          if [ ! -d "$npmRoot/@playwright" ]; then
-            npm install -g @playwright/cli@latest
-          fi
-          npx --no-install playwright-cli "$@"
-        '';
-      })
+      playwrightDashboard
       (containerPkgs.writeShellApplication {
         name = "gondolin-bash";
         runtimeInputs = (builtins.attrValues { inherit (containerPkgs) nodejs qemu gondolin; });
@@ -73,6 +70,7 @@ let
         noto-fonts
         openssh
         pi-coding-agent
+        playwright-cli
         python3
         ripgrep
         uv

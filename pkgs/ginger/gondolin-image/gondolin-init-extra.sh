@@ -51,6 +51,35 @@ fi
 # Point session bus at system bus (no desktop session in sandbox)
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 
+# Start the Playwright dashboard daemon and route it through gondolin
+# ingress. The route is `/` (not a subpath prefix): the dashboard only
+# serves at its own root — it 302-redirects `/` to `/index.html?ws=…` and
+# references all assets with absolute paths (`/assets/…`), which a
+# prefix-stripping route would send back to the listen address outside the
+# routed prefix. At `/`, every path the app emits stays inside the route.
+# Idempotent: re-running init on a resumed disk skips the start if something
+# is already listening, and the route is only appended when missing (the
+# playwright-dashboard helper owns that logic). The port can be overridden
+# via PLAYWRIGHT_DASHBOARD_PORT; the resolved port is exported and persisted
+# to /run/gondolin/playwright.port so it survives even if the listeners file
+# is overwritten by hand (`playwright-dashboard` restores the route from it).
+PLAYWRIGHT_PORT="${PLAYWRIGHT_DASHBOARD_PORT:-9323}"
+export PLAYWRIGHT_DASHBOARD_PORT="$PLAYWRIGHT_PORT"
+if command -v playwright-cli > /dev/null 2>&1; then
+  mkdir -p /run/gondolin
+  echo "$PLAYWRIGHT_PORT" >/run/gondolin/playwright.port
+  if ! curl -s -o /dev/null --max-time 2 "http://127.0.0.1:${PLAYWRIGHT_PORT}/"; then
+    nohup playwright-cli show --port "$PLAYWRIGHT_PORT" \
+      >>/var/log/playwright-dashboard.log 2>&1 &
+    log "[init] started playwright dashboard on port ${PLAYWRIGHT_PORT}"
+  fi
+  if command -v playwright-dashboard > /dev/null 2>&1; then
+    playwright-dashboard add
+  else
+    log "[init] warning: playwright-dashboard helper not found, skipping route"
+  fi
+fi
+
 # Set default Chromium flags for headless sandbox use.
 # Alpine's /usr/bin/chromium wrapper sources /etc/chromium/*.conf in lexical order.
 # We use a filename that sorts *after* chromium.conf so we can append to distro defaults.
