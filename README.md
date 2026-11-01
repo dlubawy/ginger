@@ -1,361 +1,166 @@
-# Nix Development Environment Template
+# ginger
 
-A clean Nix flake template for Nix-based projects with comprehensive pre-commit hooks and language server support.
+A spicy root for coding agents.
 
-## Overview
+ginger gives an LLM coding agent a complete, self-contained development
+environment it has full control over: a real filesystem, its own toolchain,
+its own network egress policy, and a shell that behaves like one — all
+inside a micro VM that the agent (or you) can snapshot, resume, and carry
+between machines.
 
-This template provides a minimal Nix development environment with:
+The name is deliberate: ginger is a root, and it's spicy. The project's goal
+is to hand the agent an environment hot enough to do real work in, without
+giving it your machine.
 
-- **Nix Language Server**: `nil` LSP for IDE integration
-- **Code Formatting**: `nixfmt-rfc-style` for consistent style
-- **Pre-commit Hooks**: Extensive quality checks
-- **Flake Structure**: Standard flake template ready for customization
+## Why a micro VM?
 
-## Quick Start
+Containers share the host kernel; a compromised or simply over-eager agent
+process can still see too much. ginger builds on
+[gondolin](https://github.com/earendil-works/gondolin) micro VMs because:
 
-Initialize a new Nix project:
+- **Real isolation** — each session is its own guest with its own kernel,
+  disk, and memory. The workspace is mounted in; the host is not.
+- **Secret injection without exposure** — egress is allow-listed per host,
+  and secrets can be routed to specific upstreams only (`--host-secret`),
+  so an agent can authenticate to your services without ever holding a
+  credential it shouldn't see.
+- **Ingress on demand** — a localhost gateway exposes guest services (dev
+  servers, dashboards) to the host when you ask for it, and nothing when
+  you don't.
 
-```bash
-nix flake init --template github:dlubawy/nix-configs/main#nix
+The primary consumer is the [pi](https://github.com/earendil-works/pi) coding
+agent: ginger's pi extension routes pi's built-in tools (bash, read, write,
+edit, grep, find, ls) into the VM, so the agent's entire world — commands,
+files, environment — lives in the guest.
+
+## What's in the box
+
+| Component | Where | What it does |
+| --------- | ----- | ------------ |
+| `ginger` CLI | `pkgs/ginger/src/` | Session and snapshot lifecycle on top of the gondolin host SDK: start, attach, exec, stop, snapshot, rename, remove. |
+| The image | `pkgs/ginger/gondolin-image/` | An opinionated Alpine-based OCI image for coding agents: nix + direnv (devshell workflows), git, node, python, and `playwright-cli` with its dashboard served over ingress at VM boot. |
+| pi extension | `pkgs/ginger/pi/extensions/ginger.ts` | Replaces pi's native tools with VM-backed ones; isolates the guest environment from the host; evaluates `.envrc` once at start; surfaces ingress URLs; snapshots per pi session. |
+| pi config + wrapper | `pkgs/ginger/pi/` | A nix-built `~/.pi/agent` config (extensions, skills, prompts, themes, models) and a `pi` host wrapper that keeps it up to date — merging into your existing agent dir, never deleting anything. |
+| Nix integration | `flake.nix`, `pkgs/default.nix` | Packages (`ginger`, `gondolin`, `playwright-cli`, `pi`), flake checks (see [tests](pkgs/ginger/tests/README.md)), and a dev shell. |
+
+## Quick start
+
+The repo is a nix flake; `.envrc` uses `use flake`, so direnv users get the
+dev shell on `cd`. Otherwise:
+
+```sh
+nix develop                     # or: nix run .#default -c ginger --help
 ```
 
-Enter the development environment:
+Then, from any project directory:
 
-```bash
-nix develop
+```sh
+ginger -w ~/code/my-project     # start a session with that workspace mounted
+ginger --pi                     # same, but attach the pi agent instead of a shell
+ginger -e "fix the failing test"   # one-shot non-interactive exec
 ```
 
-## Project Structure
+With no arguments, `ginger` shows a picker of active sessions and saved
+snapshots — resume, snapshot, or start fresh.
 
-The template provides:
+### Project profile: `.pi/ginger.json`
 
-- `flake.nix` - Nix flake configuration with development shell
-- `.gitignore` - Pre-configured for Nix projects
+A workspace can carry its VM preferences in `.pi/ginger.json`, picked up
+automatically when starting a session (and by the pi extension):
 
-This is a foundation for building your own Nix projects, packages, or configurations.
-
-## How It Works
-
-### Development Shell
-
-The template provides a basic development shell with:
-
-- **nil**: Nix language server for IDE integration (autocomplete, go-to-definition, etc.)
-- **nixfmt-rfc-style**: Official Nix formatter following RFC 166
-- **Pre-commit hooks**: Automated quality checks
-
-#### Environment Variables
-
-The shell sets:
-
-- `shell = "zsh"` - Preferred shell
-- `NIL_PATH` - Path to the Nix language server binary
-
-### Development Workflow
-
-This template is a starting point. You'll likely want to add:
-
-1. **Packages**: Define derivations to build software
-1. **NixOS Modules**: Create reusable system configuration modules
-1. **Home Manager Modules**: Define user-level configurations
-1. **Applications**: Build and package applications
-1. **Development Tools**: Add language-specific tooling
-
-#### Example: Adding a Package
-
-Extend `flake.nix` to build a package:
-
-```nix
-{
-  # ... existing inputs ...
-
-  outputs = { self, nixpkgs, ... }@inputs:
-    let
-      supportedSystems = [ /* ... */ ];
-      forEachSupportedSystem = /* ... */;
-    in
-    {
-      # Add packages output
-      packages = forEachSupportedSystem ({ pkgs }: {
-        default = pkgs.stdenv.mkDerivation {
-          pname = "my-app";
-          version = "1.0.0";
-          src = builtins.path {
-            path = ./.;
-            name = "template";
-          };
-
-          buildPhase = ''
-            # Your build commands
-          '';
-
-          installPhase = ''
-            mkdir -p $out/bin
-            cp my-app $out/bin/
-          '';
-        };
-      });
-
-      # ... existing checks and devShells ...
-    };
-}
+```json
+{ "direnv": true, "listen": true }
 ```
 
-#### Example: Adding a NixOS Module
+- `"direnv": true` — evaluate the workspace's `.envrc` once at VM start and
+  inject the resulting environment into every tool command (a nix devshell
+  means `just`, your language toolchains, etc. are just on PATH).
+- `"listen": true` — enable the ingress gateway on an ephemeral port; the
+  URL is announced in pi, recorded in the session's `access.json`, and shown
+  by `/ginger`.
 
-```nix
-{
-  outputs = { self, nixpkgs, ... }@inputs:
-    {
-      nixosModules.default = { config, lib, pkgs, ... }: {
-        options = {
-          services.myservice.enable = lib.mkEnableOption "my service";
-        };
+The full key set (and the equivalent CLI flags) is documented in
+`ginger --help`: memory/rootfs sizing, extra host mounts, egress
+allow-lists and per-host secrets, TCP mapping, SSH in both directions, and
+named profiles under `~/.config/ginger/profiles/`.
 
-        config = lib.mkIf config.services.myservice.enable {
-          # Module implementation
-        };
-      };
+### The pi experience
 
-      # ... existing outputs ...
-    };
-}
+Inside `pi`, the ginger extension:
+
+- runs every tool command in the VM's spec cwd with an environment made of
+  exactly three layers — the guest's login baseline, the (optional) direnv
+  environment, and pi's session variables. **The host environment is never
+  forwarded**; no host secrets, no `HOME=/Users/...`, nothing.
+- evaluates the `.envrc` once at start (with a live status line while nix
+  chews), then re-evaluates only when you ask: `/reload-direnv`.
+- takes one snapshot per pi session on shutdown — and only when the session
+  actually has a transcript on disk. Restarting with the same session resumes
+  the exact VM, features (ingress, direnv) included.
+- reports state on demand: `/ginger` shows origin, cwd, ingress URL, and env
+  capture status.
+
+The image also boots `playwright-cli`'s dashboard as an idempotent daemon
+and routes it at `/` over ingress; manage the route with the in-guest
+`playwright-dashboard` helper (`add|remove|port|status`).
+
+## Repository layout
+
+```
+flake.nix                  packages, checks, dev shell
+pkgs/default.nix           per-system package set wiring
+pkgs/gondolin/             gondolin host SDK + CLI (v0.14.0)
+pkgs/playwright-cli/       playwright-cli as a proper nix package (pinned tarballs)
+pkgs/ginger/
+  default.nix, ginger.nix  the ginger CLI package (+ pi wrapper, installer)
+  src/                     CLI: spec, sessions, checkpoints, owner features, UI
+  gondolin-image/          image build: config, rootfs extras, init script
+  pi/                      nix-built pi agent config + extensions + host wrapper
+  tests/                   E2E suites (hermetic extension test + real VM lifecycle)
 ```
 
-### Pre-commit Hooks
+## Development
 
-The template includes comprehensive quality checks that run automatically on commit:
-
-- **Security**: `trufflehog` - Detect hardcoded secrets
-- **Nix Quality**: `nixfmt-rfc-style` - Format Nix files using RFC 166 style
-- **Documentation**: `mdformat` - Format Markdown files
-- **Validation**:
-  - `flake-checker` - Validate flake structure and best practices
-  - `check-yaml` - Lint YAML files
-- **Filesystem Safety**:
-  - `check-case-conflicts` - Detect case sensitivity issues
-  - `check-symlinks` - Validate symbolic links
-- **Git Quality**:
-  - `commitizen` - Validate commit messages (conventional commits)
-  - `check-merge-conflicts` - Detect conflict markers
-  - `forbid-new-submodules` - Prevent accidental submodule creation
-  - `no-commit-to-branch` - Protect main branch from direct commits
-  - `check-added-large-files` - Block large files (>5MB)
-
-## Customization
-
-### Adding Development Tools
-
-Extend the `packages` list in the devShell:
-
-```nix
-packages = builtins.attrValues {
-  inherit (pkgs)
-  nil
-  nixfmt-rfc-style
-  # Add more tools:
-  nix-tree        # Explore dependency trees
-  nix-diff        # Diff Nix derivations
-  nixpkgs-fmt     # Alternative formatter
-  statix          # Linter for Nix
-  deadnix         # Find dead Nix code
-  alejandra       # Another Nix formatter
-  ;
-};
+```sh
+nix develop                # dev shell (pre-commit tooling included)
+nix flake check            # pre-commit checks + pi-extension-check (all systems)
 ```
 
-### Changing the Formatter
+Two end-to-end suites live in [`pkgs/ginger/tests/`](pkgs/ginger/tests/README.md):
 
-To use a different formatter, update both the pre-commit hook and package:
+- **`pi-extension-check`** — the real extension and real ginger source
+  exercised against a faithful stub of the gondolin SDK. Hermetic, fast,
+  runs in the build sandbox on every supported system.
+- **`real-vm-check`** (Linux) — boots a tiny 256M guest and drives the full
+  lifecycle: create → exec → checkpoint → resume → state persistence. Runs
+  unsandboxed; also runnable manually anywhere, including nested inside a
+  ginger VM.
 
-```nix
-# In pre-commit hooks:
-hooks = {
-  alejandra = {  # Instead of nixfmt-rfc-style
-    enable = true;
-    name = "🔍 Code Quality · ❄️ Nix · Format";
-  };
-  # ...
-};
+Commits run through a pre-commit hook set (nixfmt, mdformat, flake-checker,
+trufflehog, commitizen, …) via `prek`.
 
-# In packages:
-packages = builtins.attrValues {
-  inherit (pkgs)
-  nil
-  alejandra  # Instead of nixfmt-rfc-style
-  ;
-};
-```
+## Design notes
 
-### Adding More Pre-commit Hooks
+- **The agent owns its environment.** Everything the tools see is declared:
+  image defaults + spec env + direnv + pi session vars. Anything not
+  declared is absent — that's a feature, not a gap.
+- **Evaluate once, refresh on demand.** A nix devshell `.envrc` can take
+  minutes; ginger evaluates it at VM start (with visible progress) and never
+  again unless the user runs `/reload-direnv`. Per-command evaluation was
+  tried and rejected.
+- **Snapshots are per-session artifacts.** One pi session → one snapshot,
+  named from the session (`pi:<id>`), superseded on the next shutdown.
+  Sessions with no transcript produce none.
+- **Best-effort features, loud failures.** A failing owner feature (ingress,
+  SSH, direnv) records an error in the session's `access.json` and notifies —
+  it never sinks the VM.
+- **Never delete user state.** The pi config installer deep-merges into
+  `~/.pi/agent`, with existing user values winning; directory trees are
+  overlaid, and nothing is ever removed.
 
-Extend the hooks in `checks.pre-commit-check.hooks`:
+## Supported systems
 
-```nix
-hooks = {
-  # ... existing hooks ...
-
-  statix = {
-    enable = true;
-    name = "🔍 Code Quality · ❄️ Nix · Lint";
-  };
-
-  deadnix = {
-    enable = true;
-    name = "🔍 Code Quality · ❄️ Nix · Dead code";
-  };
-};
-```
-
-### Using a Different Shell
-
-Change the shell environment variable:
-
-```nix
-env = {
-  shell = "bash";  # or "fish", "zsh", etc.
-  NIL_PATH = "${pkgs.nil}/bin/nil";
-};
-```
-
-### Modifying Pre-commit Hook Order
-
-The hooks use `after` to define execution order. Adjust as needed:
-
-```nix
-my-hook = {
-  enable = true;
-  after = [ "other-hook" ];  # Run after other-hook
-};
-```
-
-## Platform Support
-
-This template supports:
-
-- `x86_64-linux`
-- `aarch64-linux`
-- `aarch64-darwin` (macOS Apple Silicon)
-
-## Common Use Cases
-
-### Building a CLI Tool
-
-```nix
-packages = forEachSupportedSystem ({ pkgs }: {
-  my-cli = pkgs.writeShellScriptBin "my-cli" ''
-    #!/usr/bin/env bash
-    echo "Hello from my CLI!"
-  '';
-});
-```
-
-### Creating a Development Environment for Another Language
-
-```nix
-devShells = forEachSupportedSystem ({ pkgs }: {
-  default = pkgs.mkShell {
-    buildInputs = builtins.attrValues {
-      inherit (pkgs)
-      # Add your language tooling
-      nodejs
-      python3
-      go
-      ;
-    };
-    packages = builtins.attrValues {
-      inherit (pkgs)
-      nil
-      nixfmt-rfc-style
-      ;
-    };
-  };
-});
-```
-
-### Building a Docker Image
-
-```nix
-packages = forEachSupportedSystem ({ pkgs }: {
-  docker-image = pkgs.dockerTools.buildImage {
-    name = "my-app";
-    tag = "latest";
-    contents = [ self.packages.${pkgs.system}.my-app ];
-    config = {
-      Cmd = [ "/bin/my-app" ];
-    };
-  };
-});
-```
-
-### Exporting Multiple Packages
-
-```nix
-packages = forEachSupportedSystem ({ pkgs }: {
-  app1 = pkgs.callPackage ./app1 {};
-  app2 = pkgs.callPackage ./app2 {};
-  default = self.packages.${pkgs.system}.app1;
-});
-```
-
-## Troubleshooting
-
-### `nil` not working in IDE
-
-1. Ensure you're in the development shell
-1. Check that `NIL_PATH` is set: `echo $NIL_PATH`
-1. Configure your editor to use `$NIL_PATH`
-1. Restart your editor from within the Nix shell
-
-### Formatting issues
-
-The template uses `nixfmt-rfc-style` which follows [RFC 166](https://github.com/NixOS/rfcs/pull/166). If you prefer a different style:
-
-1. Change the formatter package
-1. Update the pre-commit hook
-1. Run `nix fmt` or your chosen formatter
-
-### Flake evaluation errors
-
-```bash
-# Check flake structure
-nix flake check
-
-# Show flake metadata
-nix flake metadata
-
-# Update flake inputs
-nix flake update
-```
-
-### Pre-commit hooks fail
-
-Run hooks manually to see detailed error messages:
-
-```bash
-git commit  # hooks run automatically
-# OR
-prek run --all-files  # run all hooks manually
-```
-
-### Build fails on different platforms
-
-Ensure you're using `forEachSupportedSystem` and only include platforms you support:
-
-```nix
-supportedSystems = [
-  "x86_64-linux"
-  "aarch64-linux"
-  # Add/remove as needed
-];
-```
-
-## References
-
-- [Nix Manual](https://nixos.org/manual/nix/stable/)
-- [Nix Pills](https://nixos.org/guides/nix-pills/)
-- [nixpkgs Manual](https://nixos.org/manual/nixpkgs/stable/)
-- [Nix Flakes](https://nixos.wiki/wiki/Flakes)
-- [RFC 166 - Nix Formatting](https://github.com/NixOS/rfcs/pull/166)
-- [nil Language Server](https://github.com/oxalica/nil)
-- [Zero to Nix](https://zero-to-nix.com/)
+`x86_64-linux`, `aarch64-linux`, `aarch64-darwin` (macOS Apple Silicon).
+The guest image is built for the VM's target architecture; on macOS the
+host-side tooling runs natively while guests run under QEMU (HVF
+acceleration where available, TCG otherwise).
