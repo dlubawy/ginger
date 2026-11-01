@@ -4,10 +4,22 @@ let
   # Directory trees are taken as filesets so untracked files (editor cruft,
   # OS metadata) don't break the build. Note each store path wraps the tree
   # in a directory of its own name, hence the '/<name>' on the copies below.
-  extensions = lib.fileset.toSource { root = ./.; fileset = ./extensions; };
-  skills = lib.fileset.toSource { root = ./.; fileset = ./skills; };
-  prompts = lib.fileset.toSource { root = ./.; fileset = ./prompts; };
-  themes = lib.fileset.toSource { root = ./.; fileset = ./themes; };
+  extensions = lib.fileset.toSource {
+    root = ./.;
+    fileset = ./extensions;
+  };
+  skills = lib.fileset.toSource {
+    root = ./.;
+    fileset = ./skills;
+  };
+  prompts = lib.fileset.toSource {
+    root = ./.;
+    fileset = ./prompts;
+  };
+  themes = lib.fileset.toSource {
+    root = ./.;
+    fileset = ./themes;
+  };
 in
 # The ginger-built pi agent configuration, laid out as etc/pi/agent so the
 # same output can be dropped into the gondolin image at /etc/pi/agent and

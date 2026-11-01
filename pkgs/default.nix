@@ -27,7 +27,11 @@ let
         };
       in
       {
-        inherit gondolin playwright-cli;
+        inherit
+          gondolin
+          playwright-cli
+          pi
+          ;
         default = pkgs.callPackage ./ginger {
           inherit
             pkgs
@@ -48,12 +52,23 @@ let
         playwright-cli = pkgs.callPackage ./playwright-cli {
           pkgs = unstablePkgs;
         };
+        containerPkgs = pkgs // {
+          inherit gondolin playwright-cli;
+        };
       in
       {
-        inherit gondolin playwright-cli;
+        inherit
+          gondolin
+          playwright-cli
+          pi
+          ;
         default = pkgs.callPackage ./ginger {
-          inherit pkgs gondolin pi;
-          containerPkgs = pkgs;
+          inherit
+            pkgs
+            containerPkgs
+            gondolin
+            pi
+            ;
         };
       };
     x86_64-linux =
@@ -67,12 +82,23 @@ let
         playwright-cli = pkgs.callPackage ./playwright-cli {
           pkgs = unstablePkgs;
         };
+        containerPkgs = pkgs // {
+          inherit gondolin playwright-cli;
+        };
       in
       {
-        inherit gondolin playwright-cli;
+        inherit
+          gondolin
+          playwright-cli
+          pi
+          ;
         default = pkgs.callPackage ./ginger {
-          inherit pkgs gondolin pi;
-          containerPkgs = pkgs;
+          inherit
+            pkgs
+            containerPkgs
+            gondolin
+            pi
+            ;
         };
       };
   };

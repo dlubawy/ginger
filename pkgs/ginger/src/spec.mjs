@@ -655,6 +655,7 @@ export function makeVmOptions(spec) {
         shouldShadow: sdk.createShadowPathPredicate([
           "/.git/hooks",
           "/.direnv",
+          "/.pre-commit-config.yaml",
         ]),
         writeMode: "tmpfs",
       });
