@@ -51,11 +51,7 @@ async function cloneRepo(orgRepo: string, pi: ExtensionAPI): Promise<string> {
   }
 
   // Clone the repo
-  const result = await pi.exec("git", [
-    "clone",
-    `https://github.com/${orgRepo}`,
-    clonePath,
-  ]);
+  const result = await pi.exec("git", ["clone", `https://github.com/${orgRepo}`, clonePath]);
 
   if (result.code === 0) {
     return clonePath;
@@ -71,68 +67,56 @@ async function cloneRepo(orgRepo: string, pi: ExtensionAPI): Promise<string> {
 }
 
 export default function githubExtension(pi: ExtensionAPI): void {
-  pi.on(
-    "input",
-    async (
-      event: InputEvent,
-      ctx: ExtensionContext,
-    ): Promise<InputEventResult> => {
-      const matches = Array.from(event.text.matchAll(GITHUB_PATTERN));
-      if (matches.length === 0) {
-        return { action: "continue" };
-      }
+  pi.on("input", async (event: InputEvent, ctx: ExtensionContext): Promise<InputEventResult> => {
+    const matches = Array.from(event.text.matchAll(GITHUB_PATTERN));
+    if (matches.length === 0) {
+      return { action: "continue" };
+    }
 
-      // Show notification IMMEDIATELY before cloning starts
-      // This gives the user feedback while the clone is in progress
-      ctx.ui.notify("Cloning GitHub repos...", "info");
+    // Show notification IMMEDIATELY before cloning starts
+    // This gives the user feedback while the clone is in progress
+    ctx.ui.notify("Cloning GitHub repos...", "info");
 
-      // Collect unique org/repo patterns to clone
-      const uniqueRepos = [...new Set(matches.map((m) => m[1]))];
+    // Collect unique org/repo patterns to clone
+    const uniqueRepos = [...new Set(matches.map((m) => m[1]))];
 
-      // Clone all repos in parallel
-      const results = new Map<string, string>();
-      const errors = new Map<string, string>();
+    // Clone all repos in parallel
+    const results = new Map<string, string>();
+    const errors = new Map<string, string>();
 
-      await Promise.all(
-        uniqueRepos.map(async (orgRepo) => {
-          try {
-            const path = await cloneRepo(orgRepo, pi);
-            results.set(orgRepo, path);
-          } catch (error) {
-            errors.set(
-              orgRepo,
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-        }),
-      );
-
-      // Transform text only after cloning succeeds
-      let text = event.text;
-      for (const match of matches) {
-        const orgRepo = match[1];
-        const fullPath = match[0]; // github:<org>/<repo>
-        if (results.has(orgRepo)) {
-          text = text.replace(fullPath, results.get(orgRepo)!);
+    await Promise.all(
+      uniqueRepos.map(async (orgRepo) => {
+        try {
+          const path = await cloneRepo(orgRepo, pi);
+          results.set(orgRepo, path);
+        } catch (error) {
+          errors.set(orgRepo, error instanceof Error ? error.message : String(error));
         }
-        // If there's an error, keep the original text (don't replace)
+      }),
+    );
+
+    // Transform text only after cloning succeeds
+    let text = event.text;
+    for (const match of matches) {
+      const orgRepo = match[1];
+      const fullPath = match[0]; // github:<org>/<repo>
+      if (results.has(orgRepo)) {
+        text = text.replace(fullPath, results.get(orgRepo)!);
       }
+      // If there's an error, keep the original text (don't replace)
+    }
 
-      // Clear the initial notification and show final status
-      ctx.ui.notify("Cloning complete");
+    // Clear the initial notification and show final status
+    ctx.ui.notify("Cloning complete");
 
-      if (errors.size > 0) {
-        ctx.ui.notify(
-          `Some clones failed: ${Array.from(errors.keys()).join(", ")}`,
-          "warning",
-        );
-      }
+    if (errors.size > 0) {
+      ctx.ui.notify(`Some clones failed: ${Array.from(errors.keys()).join(", ")}`, "warning");
+    }
 
-      return {
-        action: "transform",
-        text: text,
-        images: event.images,
-      };
-    },
-  );
+    return {
+      action: "transform",
+      text: text,
+      images: event.images,
+    };
+  });
 }

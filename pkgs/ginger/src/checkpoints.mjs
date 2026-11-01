@@ -41,14 +41,7 @@ export function matchCheckpoints(queries) {
     const keys = (m) => {
       const { ws, name } = parseLabel(m.label);
       const img = path.basename(m.path);
-      return [
-        m.name,
-        name,
-        ws,
-        ws ? path.basename(ws) : null,
-        img,
-        img.replace(/\.[^.]+$/, ""),
-      ];
+      return [m.name, name, ws, ws ? path.basename(ws) : null, img, img.replace(/\.[^.]+$/, "")];
     };
     const hits = all.filter((m) => keys(m).some((k) => k === q));
     if (hits.length > 0) {
@@ -57,8 +50,7 @@ export function matchCheckpoints(queries) {
     }
     const prefix = all.filter((m) => keys(m).some((k) => k?.startsWith(q)));
     if (prefix.length === 0) fail(`no checkpoint matching '${q}'`);
-    if (prefix.length > 1)
-      fail(`'${q}' is ambiguous (${prefix.length} checkpoints match)`);
+    if (prefix.length > 1) fail(`'${q}' is ambiguous (${prefix.length} checkpoints match)`);
     matched.add(prefix[0]);
   }
   return all.filter((m) => matched.has(m));

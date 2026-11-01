@@ -40,9 +40,7 @@ export async function waitForSession(label, owner, step) {
   const deadline = start + 5 * 60_000;
   let hinted = false;
   while (Date.now() < deadline) {
-    const log = fs.existsSync(owner.logPath)
-      ? fs.readFileSync(owner.logPath, "utf8")
-      : "";
+    const log = fs.existsSync(owner.logPath) ? fs.readFileSync(owner.logPath, "utf8") : "";
     // Prefer the exact session id the owner logged. Labels are derived from
     // workspace + version, so a stale live session from an earlier run can
     // share this one's label — matching it would attach to the wrong VM and
@@ -131,10 +129,7 @@ export async function applyOwnerFeatures(
   if (spec.listen) {
     try {
       // Older checkpoints may carry the pre-normalization string form.
-      const listen =
-        typeof spec.listen === "string"
-          ? parseListenSpec(spec.listen)
-          : spec.listen;
+      const listen = typeof spec.listen === "string" ? parseListenSpec(spec.listen) : spec.listen;
       const access = await vm.enableIngress({
         listenHost: listen.host,
         listenPort: listen.port,
@@ -198,12 +193,8 @@ export async function runOwner() {
   // Log any failure — a silent exit here used to leave only an empty owner
   // log and no clue why the VM went away.
   const hold = vm.exec(["/bin/sleep", "infinity"]);
-  await hold.catch((err) =>
-    console.error(`hold ended: ${err?.message ?? err}`),
-  );
-  await vm
-    .close()
-    .catch((err) => console.error(`close failed: ${err?.message ?? err}`));
+  await hold.catch((err) => console.error(`hold ended: ${err?.message ?? err}`));
+  await vm.close().catch((err) => console.error(`close failed: ${err?.message ?? err}`));
   console.log("owner exiting");
 }
 
@@ -228,9 +219,7 @@ export async function shutdownSession(session) {
     try {
       process.kill(session.pid, "SIGTERM");
     } catch (err) {
-      console.error(
-        `could not signal owner pid ${session.pid}: ${err.message}`,
-      );
+      console.error(`could not signal owner pid ${session.pid}: ${err.message}`);
     }
   }
   const deadline = Date.now() + 15_000;
@@ -288,10 +277,7 @@ export async function snapshotSession(session, spec, snapLabel = null) {
           if (settled) return;
           const ok = await waitForFile(outPath, 60_000);
           if (ok) settle(resolve)({ path: outPath, name });
-          else
-            settle(reject)(
-              err ?? new Error("session closed before snapshot completed"),
-            );
+          else settle(reject)(err ?? new Error("session closed before snapshot completed"));
         },
       });
       client.send({ type: "snapshot", id: 1, path: outPath });

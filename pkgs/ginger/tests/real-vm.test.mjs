@@ -57,10 +57,9 @@ try {
   assert.match(String(r.stdout), /^\/\s*$/m, "exec ran in the requested cwd");
 
   // 4. per-exec env injection reaches the command
-  r = await vm.exec(
-    ["/bin/sh", "-c", 'echo "$GINGER_TEST_INJECT"'],
-    { env: { GINGER_TEST_INJECT: "injected-ok" } },
-  );
+  r = await vm.exec(["/bin/sh", "-c", 'echo "$GINGER_TEST_INJECT"'], {
+    env: { GINGER_TEST_INJECT: "injected-ok" },
+  });
   assert.equal(r.exitCode, 0);
   assert.match(String(r.stdout), /injected-ok/, "per-exec env reaches the command");
 

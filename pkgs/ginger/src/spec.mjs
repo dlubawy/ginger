@@ -5,14 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
-import {
-  LABEL_PREFIX,
-  VERSION,
-  VM_IMAGE,
-  fail,
-  profilesDir,
-  sdk,
-} from "./config.mjs";
+import { LABEL_PREFIX, VERSION, VM_IMAGE, fail, profilesDir, sdk } from "./config.mjs";
 import { paint } from "./ui.mjs";
 
 // ---------------------------------------------------------------------------
@@ -38,13 +31,11 @@ export function parseListenSpec(spec) {
 
   if (portStr.startsWith("[")) {
     const bracketEnd = portStr.indexOf("]");
-    if (bracketEnd === -1)
-      fail(`invalid --listen value: ${spec} (missing ']')`);
+    if (bracketEnd === -1) fail(`invalid --listen value: ${spec} (missing ']')`);
     host = portStr.slice(1, bracketEnd);
     if (!host) fail(`invalid --listen value: ${spec} (empty host in brackets)`);
     const rest = portStr.slice(bracketEnd + 1);
-    if (!rest.startsWith(":"))
-      fail(`invalid --listen value: ${spec} (expected :PORT after ])`);
+    if (!rest.startsWith(":")) fail(`invalid --listen value: ${spec} (expected :PORT after ])`);
     portStr = rest.slice(1);
   } else if (portStr.includes(":")) {
     const idx = portStr.lastIndexOf(":");
@@ -112,12 +103,8 @@ export function formatLabel(label) {
   const s = String(label ?? "");
   const qIdx = s.indexOf("?");
   if (qIdx < 0) return s;
-  const parts = [...new URLSearchParams(s.slice(qIdx + 1)).entries()].map(
-    ([k, v]) => `${k}=${v}`,
-  );
-  return parts.length
-    ? `${s.slice(0, qIdx)}?${parts.join("&")}`
-    : s.slice(0, qIdx);
+  const parts = [...new URLSearchParams(s.slice(qIdx + 1)).entries()].map(([k, v]) => `${k}=${v}`);
+  return parts.length ? `${s.slice(0, qIdx)}?${parts.join("&")}` : s.slice(0, qIdx);
 }
 
 // ---------------------------------------------------------------------------
@@ -132,12 +119,9 @@ export function parseSizeBytes(value, flag) {
     .trim()
     .match(/^(\d+)([KMGTkmgt])?$/);
   if (!m || !Number(m[1]))
-    fail(
-      `invalid ${flag} value: ${value} (use a number with optional K/M/G/T suffix)`,
-    );
+    fail(`invalid ${flag} value: ${value} (use a number with optional K/M/G/T suffix)`);
   const bytes = Number(m[1]) * (m[2] ? SIZE_SUFFIXES[m[2].toUpperCase()] : 1);
-  if (!Number.isSafeInteger(bytes) || bytes <= 0)
-    fail(`invalid ${flag} value: ${value}`);
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) fail(`invalid ${flag} value: ${value}`);
   return bytes;
 }
 
@@ -149,9 +133,7 @@ export function parseMountHostfs(spec, flag = "--mount-hostfs") {
   const [host, guest, ...opts] = parts;
   const ro = opts.includes("ro");
   if (opts.some((o) => o !== "ro"))
-    fail(
-      `invalid ${flag} value: ${spec} (unknown option "${opts.find((o) => o !== "ro")}")`,
-    );
+    fail(`invalid ${flag} value: ${spec} (unknown option "${opts.find((o) => o !== "ro")}")`);
   return { host, guest, ro };
 }
 
@@ -166,8 +148,7 @@ export function parseHostSecret(spec) {
     const name = (eq === -1 ? spec : spec.slice(0, eq)).trim();
     if (!name) fail(`invalid --host-secret value: ${spec} (empty name)`);
     const value = eq === -1 ? process.env[name] : spec.slice(eq + 1);
-    if (value === undefined)
-      fail(`environment variable ${name} not set for --host-secret`);
+    if (value === undefined) fail(`environment variable ${name} not set for --host-secret`);
     return { name, value, hosts: [] };
   }
   const name = spec.slice(0, at).trim();
@@ -176,16 +157,13 @@ export function parseHostSecret(spec) {
   const eq = afterAt.indexOf("=");
   const hostsStr = eq === -1 ? afterAt : afterAt.slice(0, eq);
   const value = eq === -1 ? process.env[name] : afterAt.slice(eq + 1);
-  if (value === undefined)
-    fail(`environment variable ${name} not set for --host-secret`);
+  if (value === undefined) fail(`environment variable ${name} not set for --host-secret`);
   const hosts = hostsStr
     .split(",")
     .map((h) => h.trim())
     .filter(Boolean);
   if (hosts.length === 0)
-    fail(
-      `invalid --host-secret value: ${spec} (no hosts; use ${name}@HOST[,HOST...])`,
-    );
+    fail(`invalid --host-secret value: ${spec} (no hosts; use ${name}@HOST[,HOST...])`);
   return { name, value, hosts };
 }
 
@@ -200,9 +178,7 @@ export async function resolveSecretHosts(secrets) {
       resolved.push(secret);
       continue;
     }
-    process.stderr.write(
-      `Discovering suggested hosts for secret ${secret.name}...\n`,
-    );
+    process.stderr.write(`Discovering suggested hosts for secret ${secret.name}...\n`);
     const suggestions = await sdk.suggestHostsForSecret({
       secretValue: secret.value,
     });
@@ -228,9 +204,7 @@ async function promptForSuggestedSecretHosts(secret, suggestions) {
 
   process.stderr.write(`Suggested hosts for ${secret.name}:\n`);
   suggestions.forEach((s, i) => {
-    process.stderr.write(
-      `  [${i + 1}] ${s.host}  (${s.file}:${s.line}, hits=${s.count ?? 0})\n`,
-    );
+    process.stderr.write(`  [${i + 1}] ${s.host}  (${s.file}:${s.line}, hits=${s.count ?? 0})\n`);
     if (s.snippet) process.stderr.write(`      ${s.snippet}\n`);
   });
 
@@ -240,9 +214,7 @@ async function promptForSuggestedSecretHosts(secret, suggestions) {
   });
   try {
     const answer = (
-      await rl.question(
-        "Accept all suggested hosts? [Y/n] (or enter comma-separated numbers): ",
-      )
+      await rl.question("Accept all suggested hosts? [Y/n] (or enter comma-separated numbers): ")
     )
       .trim()
       .toLowerCase();
@@ -295,27 +267,23 @@ export function parseSshCredential(spec) {
   }
 
   const eq = mainPart.lastIndexOf("=");
-  if (eq === -1)
-    fail(`invalid --ssh-credential value: ${spec} (expected HOST[:PORT]=PATH)`);
+  if (eq === -1) fail(`invalid --ssh-credential value: ${spec} (expected HOST[:PORT]=PATH)`);
   const hostPart = mainPart.slice(0, eq);
   const keyPath = mainPart.slice(eq + 1);
-  if (!keyPath)
-    fail(`invalid --ssh-credential value: ${spec} (empty key path)`);
+  if (!keyPath) fail(`invalid --ssh-credential value: ${spec} (empty key path)`);
 
   let username;
   const at = hostPart.lastIndexOf("@");
   if (at !== -1) {
     username = hostPart.slice(0, at);
-    if (!username)
-      fail(`invalid --ssh-credential value: ${spec} (empty username)`);
+    if (!username) fail(`invalid --ssh-credential value: ${spec} (empty username)`);
   }
 
   let host = at === -1 ? hostPart : hostPart.slice(at + 1);
   const colon = host.lastIndexOf(":");
   if (colon !== -1 && colon > 0) {
     const portStr = host.slice(colon + 1);
-    if (!/^\d+$/.test(portStr))
-      fail(`invalid --ssh-credential value: ${spec} (bad port)`);
+    if (!/^\d+$/.test(portStr)) fail(`invalid --ssh-credential value: ${spec} (bad port)`);
     host = host.slice(0, colon);
   }
   if (!host) fail(`invalid --ssh-credential value: ${spec} (empty host)`);
@@ -327,9 +295,7 @@ export function parseSshCredential(spec) {
 export function parseTcpMapSpec(spec) {
   const eq = String(spec).indexOf("=");
   if (eq === -1)
-    fail(
-      `invalid --tcp-map value: ${spec} (expected GUEST_HOST[:PORT]=UPSTREAM_HOST:PORT)`,
-    );
+    fail(`invalid --tcp-map value: ${spec} (expected GUEST_HOST[:PORT]=UPSTREAM_HOST:PORT)`);
   return { key: spec.slice(0, eq), value: spec.slice(eq + 1) };
 }
 
@@ -375,15 +341,13 @@ const SPEC_FILE_KEYS = new Set([
 /** Resolve a --profile name to its file path (validating the name). */
 export function profilePath(name) {
   const n = String(name ?? "").trim();
-  if (!n || n === "." || n === ".." || /[\\/]/.test(n))
-    fail(`invalid --profile name: ${name}`);
+  if (!n || n === "." || n === ".." || /[\\/]/.test(n)) fail(`invalid --profile name: ${name}`);
   return path.join(profilesDir, `${n}.json`);
 }
 
 /** Load and validate a profile JSON file. */
 export function loadProfileFile(file) {
-  if (!fs.existsSync(file))
-    fail(`profile not found: ${file} (create it under ${profilesDir}/)`);
+  if (!fs.existsSync(file)) fail(`profile not found: ${file} (create it under ${profilesDir}/)`);
   let raw;
   try {
     raw = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -432,8 +396,7 @@ export async function buildSpec(opts) {
   }
   const wsName = wsPath ? path.basename(wsPath) : null;
   let cwd = opts.cwd ?? (typeof file.cwd === "string" ? file.cwd : null);
-  if (cwd !== null && !cwd.startsWith("/"))
-    fail(`--cwd must be an absolute guest path: ${cwd}`);
+  if (cwd !== null && !cwd.startsWith("/")) fail(`--cwd must be an absolute guest path: ${cwd}`);
   if (cwd === null) cwd = wsName ? `/workspace/${wsName}` : null;
 
   // -- listen (the profile file accepts the same string form as -l, or a
@@ -453,9 +416,7 @@ export async function buildSpec(opts) {
     ) {
       listen = { host: listenRaw.host ?? "127.0.0.1", port: listenRaw.port };
     } else {
-      fail(
-        `invalid listen value in profile file: ${JSON.stringify(listenRaw)}`,
-      );
+      fail(`invalid listen value in profile file: ${JSON.stringify(listenRaw)}`);
     }
   }
 
@@ -466,8 +427,7 @@ export async function buildSpec(opts) {
       ? parseSizeBytes(file.memory, "profile file 'memory'")
       : null;
   let rootfsSize =
-    opts.rootfsSize ??
-    (typeof file.rootfsSize === "string" ? file.rootfsSize : null);
+    opts.rootfsSize ?? (typeof file.rootfsSize === "string" ? file.rootfsSize : null);
   if (rootfsSize !== null) {
     // Validate now so the user gets the error before the VM starts.
     parseSizeBytes(rootfsSize, "--rootfs-size");
@@ -488,9 +448,7 @@ export async function buildSpec(opts) {
   for (const m of hostMounts) {
     const p = path.resolve(m.host);
     if (!fs.statSync(p, { throwIfNoEntry: false })?.isDirectory())
-      fail(
-        `--mount-hostfs host path does not exist or is not a directory: ${m.host}`,
-      );
+      fail(`--mount-hostfs host path does not exist or is not a directory: ${m.host}`);
   }
 
   // -- memfs mounts
@@ -507,9 +465,7 @@ export async function buildSpec(opts) {
     ...(opts.allowHost ?? []),
   ];
   const secretsRaw = [
-    ...requireStringArray(file.secrets ?? [], "secrets").map((s) =>
-      parseHostSecret(s),
-    ),
+    ...requireStringArray(file.secrets ?? [], "secrets").map((s) => parseHostSecret(s)),
     ...(opts.hostSecret ?? []).map(parseHostSecret),
   ];
   const secrets = await resolveSecretHosts(secretsRaw);
@@ -529,9 +485,7 @@ export async function buildSpec(opts) {
   const tcpMap = { ...fileTcp };
   for (const [k, v] of Object.entries(fileTcp)) {
     if (typeof k !== "string" || typeof v !== "string")
-      fail(
-        `profile file "tcpMap" entries must be strings: ${JSON.stringify([k, v])}`,
-      );
+      fail(`profile file "tcpMap" entries must be strings: ${JSON.stringify([k, v])}`);
     parseTcpMapSpec(`${k}=${v}`);
   }
   for (const entry of opts.tcpMap ?? []) {
@@ -551,8 +505,8 @@ export async function buildSpec(opts) {
   for (const p of sshKnownHosts)
     if (!fs.existsSync(p)) fail(`--ssh-known-hosts file does not exist: ${p}`);
   const sshCredentials = [
-    ...requireStringArray(file.sshCredentials ?? [], "sshCredentials").map(
-      (s) => parseSshCredential(s),
+    ...requireStringArray(file.sshCredentials ?? [], "sshCredentials").map((s) =>
+      parseSshCredential(s),
     ),
     ...(opts.sshCredential ?? []).map(parseSshCredential),
   ];
@@ -561,8 +515,7 @@ export async function buildSpec(opts) {
     if (!fs.existsSync(p)) fail(`SSH key file does not exist: ${c.keyPath}`);
   }
 
-  let sshAgent =
-    opts.sshAgent !== undefined ? opts.sshAgent : (file.sshAgent ?? null);
+  let sshAgent = opts.sshAgent !== undefined ? opts.sshAgent : (file.sshAgent ?? null);
   if (sshAgent === true) {
     sshAgent = process.env.SSH_AUTH_SOCK?.trim() || null;
     if (!sshAgent) fail("--ssh-agent requires a socket path or $SSH_AUTH_SOCK");
@@ -570,9 +523,7 @@ export async function buildSpec(opts) {
     fail("--ssh-agent must be a socket path (or omitted for $SSH_AUTH_SOCK)");
   }
   if (sshAgent && sshAllowHosts.length === 0 && sshCredentials.length === 0)
-    fail(
-      "--ssh-agent requires at least one --ssh-allow-host (or --ssh-credential)",
-    );
+    fail("--ssh-agent requires at least one --ssh-allow-host (or --ssh-credential)");
 
   // -- SSH access into the VM
   const fileSsh = file.ssh ?? null;
@@ -586,17 +537,12 @@ export async function buildSpec(opts) {
           listen: opts.sshListen ?? fileSsh?.listen ?? "127.0.0.1",
         }
       : null;
-  if (
-    !ssh &&
-    [opts.sshUser, opts.sshPort, opts.sshListen].some((v) => v != null)
-  )
+  if (!ssh && [opts.sshUser, opts.sshPort, opts.sshListen].some((v) => v != null))
     fail("--ssh-user/--ssh-port/--ssh-listen require --ssh");
   if (ssh && !Number.isInteger(ssh.port)) fail("--ssh-port must be an integer");
 
   // -- websockets
-  const disableWebSockets = !!(
-    opts.disableWebSockets || file.disableWebSockets
-  );
+  const disableWebSockets = !!(opts.disableWebSockets || file.disableWebSockets);
 
   const spec = {
     label: makeLabel({
@@ -721,8 +667,7 @@ export function makeVmOptions(spec) {
   const creds = spec.sshCredentials ?? [];
   if ((spec.sshAllowHosts?.length ?? 0) > 0 || creds.length > 0) {
     const allowedHosts = [...(spec.sshAllowHosts ?? [])];
-    for (const c of creds)
-      if (!allowedHosts.includes(c.host)) allowedHosts.push(c.host);
+    for (const c of creds) if (!allowedHosts.includes(c.host)) allowedHosts.push(c.host);
     const credentials = Object.fromEntries(
       creds.map((c) => [
         c.host,

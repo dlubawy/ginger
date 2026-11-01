@@ -42,10 +42,7 @@ function getFileExtension(filePath: string): string | null {
 /**
  * Find a matching formatter config for a file extension
  */
-function findFormatter(
-  extension: string,
-  config: FormattersConfig,
-): FormatterConfig | null {
+function findFormatter(extension: string, config: FormattersConfig): FormatterConfig | null {
   for (const configName of Object.keys(config)) {
     const formatterConfig = config[configName];
     if (formatterConfig.extensions.includes(extension)) {
@@ -58,11 +55,7 @@ function findFormatter(
 /**
  * Format a file using the configured formatter command
  */
-async function formatFile(
-  filePath: string,
-  formatter: string,
-  pi: ExtensionAPI,
-): Promise<boolean> {
+async function formatFile(filePath: string, formatter: string, pi: ExtensionAPI): Promise<boolean> {
   // Build the full command by appending the file path
   const fullCommand = `${formatter} ${filePath}`;
 
@@ -93,10 +86,7 @@ function isFileWritingTool(toolName: string): boolean {
 /**
  * Extract the file path from tool call input
  */
-function extractFilePath(
-  toolName: string,
-  input: Record<string, unknown>,
-): string | null {
+function extractFilePath(toolName: string, input: Record<string, unknown>): string | null {
   if (toolName === "write" || toolName === "file_write") {
     return input.path as string;
   }
@@ -109,10 +99,7 @@ function extractFilePath(
 /**
  * Validate that a file path exists and is accessible
  */
-async function fileExists(
-  filePath: string,
-  pi: ExtensionAPI,
-): Promise<boolean> {
+async function fileExists(filePath: string, pi: ExtensionAPI): Promise<boolean> {
   try {
     const result = await pi.exec("test", ["-f", filePath]);
     return result.code === 0;

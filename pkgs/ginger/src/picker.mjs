@@ -36,11 +36,7 @@ export function targetDetail(kind, t) {
  * Returns { type: "session", target }, { type: "checkpoint", target } or
  * { type: "fresh" }.
  */
-export async function pickTarget(
-  sessions,
-  checkpoints,
-  { fresh = false } = {},
-) {
+export async function pickTarget(sessions, checkpoints, { fresh = false } = {}) {
   const items = [
     ...sessions.map((s) => ({ kind: "session", t: s })),
     ...(fresh ? checkpoints.map((m) => ({ kind: "checkpoint", t: m })) : []),
@@ -52,8 +48,7 @@ export async function pickTarget(
     if (sessions.length === 1) return { type: "session", target: sessions[0] };
     if (sessions.length === 0) return { type: "fresh" };
     console.error("Multiple ginger sessions active:");
-    for (const s of sessions)
-      console.error(`  ${s.id}  ${targetTitle("session", s)}  ${s.label}`);
+    for (const s of sessions) console.error(`  ${s.id}  ${targetTitle("session", s)}  ${s.label}`);
     fail("pass --session ID to choose one");
   }
 
@@ -65,15 +60,11 @@ export async function pickTarget(
   console.error("\nActive sessions:");
   let n = 0;
   for (const s of sessions)
-    console.error(
-      `  ${++n}. ${targetTitle("session", s)}  ${targetDetail("session", s)}`,
-    );
+    console.error(`  ${++n}. ${targetTitle("session", s)}  ${targetDetail("session", s)}`);
   if (fresh && checkpoints.length > 0) {
     console.error("\nSnapshots:");
     for (const m of checkpoints)
-      console.error(
-        `  ${++n}. ${targetTitle("checkpoint", m)}  ${targetDetail("checkpoint", m)}`,
-      );
+      console.error(`  ${++n}. ${targetTitle("checkpoint", m)}  ${targetDetail("checkpoint", m)}`);
   }
 
   const def = sessions.length > 0 ? "1" : "n";
@@ -81,14 +72,9 @@ export async function pickTarget(
   const answer = (await ask(`Select [${def}]: `, process.stderr)).toLowerCase();
   if (fresh && (answer === "n" || answer === "new")) return { type: "fresh" };
   if (answer === "")
-    return sessions.length > 0
-      ? { type: "session", target: sessions[0] }
-      : { type: "fresh" };
+    return sessions.length > 0 ? { type: "session", target: sessions[0] } : { type: "fresh" };
   const idx = Number(answer) - 1;
-  if (!Number.isInteger(idx) || idx < 0 || idx >= items.length)
-    fail("invalid selection");
+  if (!Number.isInteger(idx) || idx < 0 || idx >= items.length) fail("invalid selection");
   const { kind, t } = items[idx];
-  return kind === "session"
-    ? { type: "session", target: t }
-    : { type: "checkpoint", target: t };
+  return kind === "session" ? { type: "session", target: t } : { type: "checkpoint", target: t };
 }

@@ -31,11 +31,7 @@ import {
   logDir,
   sdk,
 } from "./config.mjs";
-import {
-  ensureContainerImage,
-  ensureVmImage,
-  removeImages,
-} from "./images.mjs";
+import { ensureContainerImage, ensureVmImage, removeImages } from "./images.mjs";
 import {
   ClientLease,
   activeLifecycleOp,
@@ -45,19 +41,9 @@ import {
   matchSession,
   readSessionSpec,
 } from "./sessions.mjs";
-import {
-  listCheckpoints,
-  matchCheckpoints,
-  removeCheckpoints,
-} from "./checkpoints.mjs";
+import { listCheckpoints, matchCheckpoints, removeCheckpoints } from "./checkpoints.mjs";
 import { pickTarget, targetTitle } from "./picker.mjs";
-import {
-  buildSpec,
-  formatLabel,
-  mergeEnv,
-  parseLabel,
-  setLabelName,
-} from "./spec.mjs";
+import { buildSpec, formatLabel, mergeEnv, parseLabel, setLabelName } from "./spec.mjs";
 import {
   interact,
   runOwner,
@@ -195,8 +181,7 @@ Everything after a bare -- is treated as the command to exec.
 
 function needValue(argv, i, flag) {
   const v = argv[i + 1];
-  if (v === undefined || v.startsWith("-"))
-    fail(`option ${flag} requires a value`);
+  if (v === undefined || v.startsWith("-")) fail(`option ${flag} requires a value`);
   return v;
 }
 
@@ -399,17 +384,11 @@ function creationOnlyFlags(opts) {
   if (opts.hostSecret.length > 0) flags.push("--host-secret");
   if (opts.tcpMap.length > 0) flags.push("--tcp-map");
   if (opts.sshAllowHost.length > 0) flags.push("--ssh-allow-host");
-  if (opts.sshAgent !== undefined && opts.sshAgent !== null)
-    flags.push("--ssh-agent");
+  if (opts.sshAgent !== undefined && opts.sshAgent !== null) flags.push("--ssh-agent");
   if (opts.sshKnownHosts.length > 0) flags.push("--ssh-known-hosts");
   if (opts.sshCredential.length > 0) flags.push("--ssh-credential");
   if (opts.disableWebSockets) flags.push("--disable-websockets");
-  if (
-    opts.ssh ||
-    opts.sshUser !== null ||
-    opts.sshPort !== null ||
-    opts.sshListen !== null
-  )
+  if (opts.ssh || opts.sshUser !== null || opts.sshPort !== null || opts.sshListen !== null)
     flags.push("--ssh");
   if (opts.listen) flags.push("-l, --listen");
   if (opts.direnv) flags.push("-d, --direnv");
@@ -428,9 +407,7 @@ function formatSize(bytes) {
 }
 
 function printTable(headers, rows) {
-  const widths = headers.map((h, c) =>
-    Math.max(h.length, ...rows.map((r) => r[c]?.length ?? 0)),
-  );
+  const widths = headers.map((h, c) => Math.max(h.length, ...rows.map((r) => r[c]?.length ?? 0)));
   const line = (cells) =>
     "  " +
     cells
@@ -444,11 +421,9 @@ function printTable(headers, rows) {
 async function commandList(opts) {
   const wsPath = opts.workspace ? path.resolve(opts.workspace) : null;
   let sessions = await gingerSessions();
-  if (wsPath)
-    sessions = sessions.filter((s) => parseLabel(s.label).ws === wsPath);
+  if (wsPath) sessions = sessions.filter((s) => parseLabel(s.label).ws === wsPath);
   let checkpoints = listCheckpoints();
-  if (wsPath)
-    checkpoints = checkpoints.filter((m) => parseLabel(m.label).ws === wsPath);
+  if (wsPath) checkpoints = checkpoints.filter((m) => parseLabel(m.label).ws === wsPath);
 
   console.log(`Sessions (${sessions.length}):`);
   if (sessions.length === 0) console.log("  (none)");
@@ -490,9 +465,7 @@ async function commandRemove(opts) {
     );
   }
   if (!opts.yes) {
-    const answer = (
-      await ask("\nRemove these snapshots? [y/N] ", process.stdout)
-    ).toLowerCase();
+    const answer = (await ask("\nRemove these snapshots? [y/N] ", process.stdout)).toLowerCase();
     if (!answer.startsWith("y")) {
       console.log("aborted");
       return;
@@ -531,9 +504,7 @@ async function commandLifecycle(opts) {
   // re-supplying any flags. Falls back to a CLI-built spec for sessions
   // created before spec persistence existed.
   const spec = readSessionSpec(session.id) ?? (await buildSpec(opts));
-  const snapLabel = opts.name
-    ? setLabelName(session.label, opts.name)
-    : session.label;
+  const snapLabel = opts.name ? setLabelName(session.label, opts.name) : session.label;
   await snapshotSession(session, spec, snapLabel);
   return 0;
 }
@@ -544,17 +515,11 @@ async function commandRename(opts) {
   const [query, newName] = opts.targets;
   const matches = matchCheckpoints([query]);
   if (matches.length !== 1)
-    fail(
-      `expected exactly one snapshot matching '${query}', got ${matches.length}`,
-    );
+    fail(`expected exactly one snapshot matching '${query}', got ${matches.length}`);
   const m = matches[0];
   m.label = setLabelName(m.label, newName ?? null);
   fs.writeFileSync(`${m.path}.json`, JSON.stringify(m, null, 2));
-  console.log(
-    newName
-      ? `renamed '${query}' to '${newName}'`
-      : `cleared the name of '${query}'`,
-  );
+  console.log(newName ? `renamed '${query}' to '${newName}'` : `cleared the name of '${query}'`);
   console.log(`label: ${m.label}`);
 }
 
@@ -613,8 +578,7 @@ async function main() {
   if (opts.command === "ls") return commandList(opts);
   if (opts.command === "rm") return commandRemove(opts);
   if (opts.command === "rename") return commandRename(opts);
-  if (opts.command === "stop" || opts.command === "snap")
-    return commandLifecycle(opts);
+  if (opts.command === "stop" || opts.command === "snap") return commandLifecycle(opts);
 
   await ensureContainerImage();
   await ensureVmImage();
@@ -623,12 +587,9 @@ async function main() {
   // carries the absolute host path).
   const wsPath = opts.workspace ? path.resolve(opts.workspace) : null;
   let sessions = await gingerSessions();
-  if (wsPath)
-    sessions = sessions.filter((s) => parseLabel(s.label).ws === wsPath);
+  if (wsPath) sessions = sessions.filter((s) => parseLabel(s.label).ws === wsPath);
 
-  const checkpoints = listCheckpoints().filter(
-    (m) => !wsPath || parseLabel(m.label).ws === wsPath,
-  );
+  const checkpoints = listCheckpoints().filter((m) => !wsPath || parseLabel(m.label).ws === wsPath);
 
   // VM-creation flags cannot be applied to a session that already exists —
   // fail loudly instead of silently ignoring them.
@@ -643,9 +604,7 @@ async function main() {
   let spec = null;
   let session = null;
   if (opts.session) {
-    const match = sessions.find(
-      (s) => s.id === opts.session || s.id.startsWith(opts.session),
-    );
+    const match = sessions.find((s) => s.id === opts.session || s.id.startsWith(opts.session));
     if (!match) fail(`no active ginger session matching '${opts.session}'`);
     refuseExistingSession(match);
     session = match;
@@ -666,12 +625,9 @@ async function main() {
       spec = checkpoint?.spec
         ? { ...checkpoint.spec, checkpoint: checkpoint.path }
         : await buildSpec(opts);
-      if (checkpoint && opts.name)
-        spec.label = setLabelName(spec.label, opts.name);
+      if (checkpoint && opts.name) spec.label = setLabelName(spec.label, opts.name);
       const step = new Step(
-        checkpoint
-          ? `Resuming VM from checkpoint ${checkpoint.name}`
-          : "Starting VM session",
+        checkpoint ? `Resuming VM from checkpoint ${checkpoint.name}` : "Starting VM session",
       );
       const owner = startOwner(spec);
       session = await waitForSession(spec.label, owner, step);
@@ -699,9 +655,7 @@ async function main() {
         if (access.ssh) console.error(`SSH enabled: ${access.ssh.command}`);
         if (access.ingress) {
           console.error(`Ingress enabled: ${access.ingress.url}`);
-          console.error(
-            "Configure routes by editing /etc/gondolin/listeners inside the VM.",
-          );
+          console.error("Configure routes by editing /etc/gondolin/listeners inside the VM.");
         }
       }
     }
@@ -750,9 +704,7 @@ async function main() {
           `Other ginger connections active (${others}) — leaving session ${session.id} running.`,
         );
       } else {
-        const answer = (
-          await ask("Shutdown VM? [y/N] ", process.stdout)
-        ).toLowerCase();
+        const answer = (await ask("Shutdown VM? [y/N] ", process.stdout)).toLowerCase();
         if (answer.startsWith("y")) {
           await shutdownSession(session);
         }

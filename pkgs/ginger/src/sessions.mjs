@@ -47,9 +47,7 @@ export class ClientLease {
     // instead of waiting for GC. (SIGINT is left alone: interactive clients
     // may want their own Ctrl-C handling; SIGKILL can't be caught.)
     for (const sig of ["SIGTERM", "SIGHUP"])
-      process.once(sig, () =>
-        process.exit(128 + { SIGTERM: 15, SIGHUP: 1 }[sig]),
-      );
+      process.once(sig, () => process.exit(128 + { SIGTERM: 15, SIGHUP: 1 }[sig]));
   }
 
   release() {
@@ -72,12 +70,9 @@ export class ClientLease {
     let n = 0;
     for (const f of files) {
       const pid = Number(f);
-      if (!Number.isInteger(pid) || pid === process.pid || !isAlive(pid))
-        continue;
+      if (!Number.isInteger(pid) || pid === process.pid || !isAlive(pid)) continue;
       try {
-        const age =
-          Date.now() -
-          fs.statSync(path.join(leaseDirFor(sessionId), f)).mtimeMs;
+        const age = Date.now() - fs.statSync(path.join(leaseDirFor(sessionId), f)).mtimeMs;
         if (age < LEASE_STALE_MS) n++;
       } catch {
         // vanished between readdir and stat — ignore
@@ -216,12 +211,9 @@ export function setLifecycleOp(sessionId, op) {
  */
 export function activeLifecycleOp(sessionId) {
   try {
-    const { op, pid, at } = JSON.parse(
-      fs.readFileSync(lifecyclePath(sessionId), "utf8"),
-    );
+    const { op, pid, at } = JSON.parse(fs.readFileSync(lifecyclePath(sessionId), "utf8"));
     if (typeof op !== "string") return null;
-    if (!Number.isInteger(pid) || pid === process.pid || !isAlive(pid))
-      return null;
+    if (!Number.isInteger(pid) || pid === process.pid || !isAlive(pid)) return null;
     if (Date.now() - new Date(at).getTime() > LIFECYCLE_STALE_MS) return null;
     return op;
   } catch {
@@ -237,9 +229,7 @@ export function activeLifecycleOp(sessionId) {
 export async function gingerSessions() {
   await sdk.gcSessions().catch(() => {});
   const sessions = await sdk.listSessions();
-  return sessions.filter(
-    (s) => s.alive && (s.label ?? "").startsWith(LABEL_PREFIX),
-  );
+  return sessions.filter((s) => s.alive && (s.label ?? "").startsWith(LABEL_PREFIX));
 }
 
 /**
@@ -261,9 +251,7 @@ export function matchSession(sessions, query) {
       );
     return exact[0];
   }
-  const prefix = sessions.filter((s) =>
-    keys(s).some((k) => k?.startsWith(query)),
-  );
+  const prefix = sessions.filter((s) => keys(s).some((k) => k?.startsWith(query)));
   if (prefix.length === 0) fail(`no active ginger session matching '${query}'`);
   if (prefix.length > 1)
     fail(
@@ -290,11 +278,7 @@ export function writeSessionSpec(sessionId, spec) {
     fs.mkdirSync(path.dirname(sessionSpecPath(sessionId)), { recursive: true });
     // Mode 0600: specs may carry secret values (--host-secret) and SSH
     // passphrases.
-    fs.writeFileSync(
-      sessionSpecPath(sessionId),
-      JSON.stringify(spec, null, 2),
-      { mode: 0o600 },
-    );
+    fs.writeFileSync(sessionSpecPath(sessionId), JSON.stringify(spec, null, 2), { mode: 0o600 });
   } catch {
     // best effort — clients fall back to their own spec
   }

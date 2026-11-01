@@ -58,6 +58,16 @@
                 name = "🔍 Code Quality · ❄️ Nix · Format";
                 after = [ "trufflehog" ];
               };
+              oxfmt = {
+                enable = true;
+                name = "🔍 Code Quality · 🟦 TypeScript · Format";
+                after = [ "trufflehog" ];
+              };
+              oxlint = {
+                enable = true;
+                name = "🔍 Code Quality · 🟦 TypeScript · Lint";
+                after = [ "oxfmt" ];
+              };
               flake-checker = {
                 enable = true;
                 name = "✅ Data & Config Validation · ❄️ Nix · Flake checker";
@@ -65,12 +75,18 @@
                   "--check-supported"
                   "false"
                 ];
-                after = [ "nixfmt" ];
+                after = [
+                  "nixfmt"
+                  "oxlint"
+                ];
               };
               check-yaml = {
                 enable = true;
                 name = "✅ Data & Config Validation · YAML · Lint";
-                after = [ "nixfmt" ];
+                after = [
+                  "nixfmt"
+                  "oxlint"
+                ];
               };
               mdformat = {
                 enable = true;

@@ -57,12 +57,8 @@ function makeVm(options, resumed = false) {
       execCalls.push({ cmd, opts });
       const flat = Array.isArray(cmd) ? cmd.join(" ") : String(cmd);
       if (flat.includes("command -v bash"))
-        return makeProc(
-          { exitCode: 0, stdout: "/bin/bash\n", stderr: "" },
-          opts,
-        );
-      if (flat === "direnv allow")
-        return makeProc({ exitCode: 0, stdout: "", stderr: "" }, opts);
+        return makeProc({ exitCode: 0, stdout: "/bin/bash\n", stderr: "" }, opts);
+      if (flat === "direnv allow") return makeProc({ exitCode: 0, stdout: "", stderr: "" }, opts);
       if (flat === "/bin/bash -lc env -0 | base64") {
         const payload =
           "PATH=/root/.nix-profile/bin:/usr/local/sbin:/usr/bin\0NIX_BASE=yes\0_=/bin/env\0";

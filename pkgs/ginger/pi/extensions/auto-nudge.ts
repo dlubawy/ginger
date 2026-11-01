@@ -28,10 +28,7 @@
  *     cycle starts over.
  */
 
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 
 // ---------------------------------------------------------------------------
@@ -39,22 +36,18 @@ import type { Model } from "@earendil-works/pi-ai";
 // ---------------------------------------------------------------------------
 
 const MAX_NUDGES = 3;
-const NUDGE_TEXT = "[Automation: /etc/pi/agent/extensions/auto-nudge.ts]\n[Incomplete work detected]\nContinue your work.";
+const NUDGE_TEXT =
+  "[Automation: /etc/pi/agent/extensions/auto-nudge.ts]\n[Incomplete work detected]\nContinue your work.";
 const EVALUATION_WINDOW = 3; // how many recent assistant messages to inspect
 
 // Classifier settings. The /systemone endpoint has a hard 1024-token context
 // window, so the text we send it must stay well under that once the question,
 // criteria and JSON scaffolding are counted.
-const CLASSIFIER_ENDPOINT =
-  process.env.AUTO_NUDGE_CLASSIFIER_URL ?? "/systemone";
+const CLASSIFIER_ENDPOINT = process.env.AUTO_NUDGE_CLASSIFIER_URL ?? "/systemone";
 const CLASSIFIER_MODEL = process.env.AUTO_NUDGE_CLASSIFIER_MODEL ?? "default";
-const NUDGE_THRESHOLD = Number(
-  process.env.AUTO_NUDGE_CLASSIFIER_THRESHOLD ?? 0.5,
-);
+const NUDGE_THRESHOLD = Number(process.env.AUTO_NUDGE_CLASSIFIER_THRESHOLD ?? 0.5);
 // ~200-250 tokens of text; leaves comfortable headroom inside the 1024 window.
-const CLASSIFIER_TEXT_LIMIT = Number(
-  process.env.AUTO_NUDGE_CLASSIFIER_CHARS ?? 800,
-);
+const CLASSIFIER_TEXT_LIMIT = Number(process.env.AUTO_NUDGE_CLASSIFIER_CHARS ?? 800);
 
 // Classifier prompt. Tuned so "done" requires an explicit end-of-conversation
 // signal, and any hint of remaining or interrupted work counts as not done.
@@ -310,11 +303,7 @@ export default function (pi: ExtensionAPI) {
       // not a mid-work stall: never nudge, just let it end.
       AGENT_TURN_COMPLETED = true;
       updateStatus(ctx);
-      if (ctx.hasUI)
-        ctx.ui.notify(
-          "Auto-nudge: turn interrupted by user, skipping nudge.",
-          "info",
-        );
+      if (ctx.hasUI) ctx.ui.notify("Auto-nudge: turn interrupted by user, skipping nudge.", "info");
       return;
     }
 
@@ -340,11 +329,7 @@ export default function (pi: ExtensionAPI) {
       // The agent is genuinely waiting on the human or has finished.
       AGENT_TURN_COMPLETED = true;
       updateStatus(ctx);
-      if (ctx.hasUI)
-        ctx.ui.notify(
-          "Auto-nudge: turn completed, awaiting your input.",
-          "info",
-        );
+      if (ctx.hasUI) ctx.ui.notify("Auto-nudge: turn completed, awaiting your input.", "info");
       return;
     }
 
@@ -353,10 +338,7 @@ export default function (pi: ExtensionAPI) {
       AGENT_TURN_COMPLETED = true;
       updateStatus(ctx);
       if (ctx.hasUI)
-        ctx.ui.notify(
-          `Auto-nudge: gave up after ${MAX_NUDGES} nudges, ending turn.`,
-          "warning",
-        );
+        ctx.ui.notify(`Auto-nudge: gave up after ${MAX_NUDGES} nudges, ending turn.`, "warning");
       return;
     }
 
@@ -364,10 +346,7 @@ export default function (pi: ExtensionAPI) {
     nudgesSent += 1;
     updateStatus(ctx);
     if (ctx.hasUI)
-      ctx.ui.notify(
-        `Auto-nudge: nudging agent (${nudgesSent}/${MAX_NUDGES})...`,
-        "info",
-      );
+      ctx.ui.notify(`Auto-nudge: nudging agent (${nudgesSent}/${MAX_NUDGES})...`, "info");
 
     if (ctx.isIdle()) {
       pi.sendUserMessage(NUDGE_TEXT);

@@ -1,12 +1,6 @@
 // Image pipeline (declarative assets from the nix store).
 
-import {
-  BUILD_CONFIG,
-  CONTAINER_IMAGE,
-  IMAGE_TAR,
-  VM_IMAGE,
-  sdk,
-} from "./config.mjs";
+import { BUILD_CONFIG, CONTAINER_IMAGE, IMAGE_TAR, VM_IMAGE, sdk } from "./config.mjs";
 import { Step, run, saveLog, tail } from "./ui.mjs";
 
 export async function ensureContainerImage() {
@@ -37,11 +31,11 @@ export async function ensureVmImage() {
   const step = new Step(`Building gondolin VM image ${VM_IMAGE}`);
   // Relative paths in the build config resolve against the config file's
   // directory, so the nix store path works from any cwd.
-  const built = await run(
-    "gondolin",
-    ["build", "--tag", VM_IMAGE, "--config", BUILD_CONFIG],
-    { capture: true, quiet: true, onLine: (l) => step.note(l) },
-  );
+  const built = await run("gondolin", ["build", "--tag", VM_IMAGE, "--config", BUILD_CONFIG], {
+    capture: true,
+    quiet: true,
+    onLine: (l) => step.note(l),
+  });
   if (built.code !== 0) {
     const logPath = saveLog("vm-image-build", built.out);
     for (const l of tail(built.out, 15).split("\n")) step.note(l);

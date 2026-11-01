@@ -15,14 +15,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const FORBIDDEN_PATTERNS = [
   {
     pattern: /PREK_ALLOW_NO_CONFIG\s*=/,
-    description:
-      "Setting PREK_ALLOW_NO_CONFIG disables config validation checks",
+    description: "Setting PREK_ALLOW_NO_CONFIG disables config validation checks",
     risk: "High",
   },
   {
     pattern: /PRE_COMMIT_ALLOW_NO_CONFIG\s*=/,
-    description:
-      "Setting PRE_COMMIT_ALLOW_NO_CONFIG disables config validation checks",
+    description: "Setting PRE_COMMIT_ALLOW_NO_CONFIG disables config validation checks",
     risk: "High",
   },
   {
@@ -42,27 +40,24 @@ const FORBIDDEN_PATTERNS = [
   },
   {
     pattern: /SKIP_PRECOMMIT\s*=/,
-    description:
-      "Setting SKIP_PRECOMMIT environment variable to skip pre-commit",
+    description: "Setting SKIP_PRECOMMIT environment variable to skip pre-commit",
     risk: "High",
   },
   {
     pattern: /PREK_SKIP\s*=/,
-    description:
-      "Setting PREK_SKIP environment variable to skip prek",
+    description: "Setting PREK_SKIP environment variable to skip prek",
     risk: "High",
   },
   {
     pattern: /SKIP\s*=/,
-    description:
-      "Setting SKIP environment variable to skip pre-commit",
+    description: "Setting SKIP environment variable to skip pre-commit",
     risk: "High",
   },
   {
     pattern: /SKIP_HOOKS\s*=/,
     description: "Setting SKIP_HOOKS environment variable to skip git hooks",
     risk: "High",
-  }
+  },
 ];
 
 /**
@@ -83,10 +78,7 @@ function checkForbiddenPatterns(
 /**
  * Extract the command string from various tool calls.
  */
-function extractCommand(
-  toolName: string,
-  args: Record<string, unknown>,
-): string | null {
+function extractCommand(toolName: string, args: Record<string, unknown>): string | null {
   switch (toolName) {
     case "bash":
       return args.command as string;

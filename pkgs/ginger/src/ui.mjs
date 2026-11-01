@@ -9,8 +9,7 @@ import readline from "node:readline/promises";
 
 import { logDir } from "./config.mjs";
 
-export const waitFor = (ms) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+export const waitFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * True if pid refers to a running process. kill(0) also succeeds for
@@ -37,8 +36,7 @@ export function isAlive(pid) {
     const r = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], {
       encoding: "utf8",
     });
-    if (r.status === 0 && r.stdout.trim())
-      return !r.stdout.trimStart().startsWith("Z");
+    if (r.status === 0 && r.stdout.trim()) return !r.stdout.trimStart().startsWith("Z");
   } catch {
     // vanished or unreadable — fall through
   }
@@ -66,18 +64,12 @@ export function tail(text, lines = 30) {
  * failure banner with quiet: true when the caller handles errors itself).
  * With onLine, complete lines are also streamed live as they arrive.
  */
-export async function run(
-  cmd,
-  args,
-  { capture = false, quiet = false, onLine = null } = {},
-) {
+export async function run(cmd, args, { capture = false, quiet = false, onLine = null } = {}) {
   const child = spawn(cmd, args, {
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
   });
   if (!capture) {
-    return await new Promise((resolve) =>
-      child.on("close", (code) => resolve(code ?? 1)),
-    );
+    return await new Promise((resolve) => child.on("close", (code) => resolve(code ?? 1)));
   }
   let output = ""; // unflushed remainder (fed to onLine as lines complete)
   let full = ""; // everything seen so far (returned as out)
@@ -94,9 +86,7 @@ export async function run(
   };
   child.stdout.on("data", feed);
   child.stderr.on("data", feed);
-  const code = await new Promise((resolve) =>
-    child.on("close", (c) => resolve(c ?? 1)),
-  );
+  const code = await new Promise((resolve) => child.on("close", (c) => resolve(c ?? 1)));
   if (code !== 0 && !quiet) {
     console.error(
       `\n✗ ${path.basename(cmd)} ${args.join(" ")} failed (exit ${code}):\n${full.trim()}\n`,
@@ -138,9 +128,7 @@ export class Step {
     if (process.stderr.isTTY) {
       const draw = () => {
         const f = SPINNER_FRAMES[this.frame++ % SPINNER_FRAMES.length];
-        process.stderr.write(
-          `\r\x1b[2K${f} ${label} (${formatElapsed(Date.now() - this.t0)})`,
-        );
+        process.stderr.write(`\r\x1b[2K${f} ${label} (${formatElapsed(Date.now() - this.t0)})`);
       };
       this.timer = setInterval(draw, 80);
       draw();
@@ -153,8 +141,7 @@ export class Step {
   note(line) {
     if (!line.trim()) return;
     if (this.timer) process.stderr.write("\r\x1b[2K");
-    for (const l of String(line).split("\n"))
-      process.stderr.write(`  ${paint.dim(l)}\n`);
+    for (const l of String(line).split("\n")) process.stderr.write(`  ${paint.dim(l)}\n`);
   }
 
   succeed(detail = this.label) {

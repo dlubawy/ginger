@@ -79,10 +79,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   type BashOperations,
   createBashTool,
@@ -134,20 +131,10 @@ interface VmStat {
 
 interface VmFs {
   readFile(path: string, opts?: { signal?: AbortSignal }): Promise<Buffer>;
-  readFile(
-    path: string,
-    opts: { encoding: "utf8"; signal?: AbortSignal },
-  ): Promise<string>;
-  writeFile(
-    path: string,
-    content: string | Buffer,
-    opts?: { encoding?: string },
-  ): Promise<void>;
+  readFile(path: string, opts: { encoding: "utf8"; signal?: AbortSignal }): Promise<string>;
+  writeFile(path: string, content: string | Buffer, opts?: { encoding?: string }): Promise<void>;
   access(path: string, opts?: { signal?: AbortSignal }): Promise<void>;
-  mkdir(
-    path: string,
-    opts?: { recursive?: boolean; signal?: AbortSignal },
-  ): Promise<void>;
+  mkdir(path: string, opts?: { recursive?: boolean; signal?: AbortSignal }): Promise<void>;
   listDir(path: string, opts?: { signal?: AbortSignal }): Promise<string[]>;
   stat(path: string, opts?: { signal?: AbortSignal }): Promise<VmStat>;
 }
@@ -195,11 +182,7 @@ interface GingerEnvInfo {
 interface GingerSpecModule {
   buildSpec(opts: Record<string, unknown>): Promise<Record<string, any>>;
   makeVmOptions(spec: Record<string, any>): Record<string, any>;
-  makeLabel(parts: {
-    ws?: string | null;
-    name?: string | null;
-    pi?: string | null;
-  }): string;
+  makeLabel(parts: { ws?: string | null; name?: string | null; pi?: string | null }): string;
   parseLabel(label: string): {
     ws: string | null;
     name: string | null;
@@ -297,9 +280,7 @@ function gingerCall<T>(fn: () => T | Promise<T>): Promise<T> {
     };
     process.exit = ((code?: number) => {
       const detail = captured.trim();
-      throw new Error(
-        detail ? `ginger: ${detail}` : `ginger exited with code ${code ?? 0}`,
-      );
+      throw new Error(detail ? `ginger: ${detail}` : `ginger exited with code ${code ?? 0}`);
     }) as typeof process.exit;
     process.stderr.write = ((chunk: unknown, ..._rest: unknown[]) => {
       captured += String(chunk);
@@ -387,29 +368,19 @@ async function doLoadGinger(): Promise<GingerModules | null> {
 }
 
 /** Resolve a GINGER_PI_SNAPSHOT value to checkpoint metadata. */
-function resolveSnapshot(
-  g: GingerModules,
-  value: string,
-): GingerCheckpointMeta {
+function resolveSnapshot(g: GingerModules, value: string): GingerCheckpointMeta {
   if (path.isAbsolute(value)) {
     const qcow = value.endsWith(".qcow2")
       ? value
       : value.endsWith(".json")
         ? `${value.slice(0, -".json".length)}.qcow2`
         : null;
-    if (!qcow)
-      throw new Error(
-        `GINGER_PI_SNAPSHOT path must end in .qcow2 or .json: ${value}`,
-      );
+    if (!qcow) throw new Error(`GINGER_PI_SNAPSHOT path must end in .qcow2 or .json: ${value}`);
     const metaPath = `${qcow}.json`;
     if (!fs.existsSync(metaPath))
-      throw new Error(
-        `no checkpoint metadata for ${qcow} (expected ${metaPath})`,
-      );
+      throw new Error(`no checkpoint metadata for ${qcow} (expected ${metaPath})`);
     return {
-      ...(JSON.parse(
-        fs.readFileSync(metaPath, "utf8"),
-      ) as GingerCheckpointMeta),
+      ...(JSON.parse(fs.readFileSync(metaPath, "utf8")) as GingerCheckpointMeta),
       path: qcow,
     };
   }
@@ -441,10 +412,7 @@ function toPosix(value: string): string {
 
 function isInsideHostPath(root: string, value: string): boolean {
   const relativePath = path.relative(root, value);
-  return (
-    relativePath === "" ||
-    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
-  );
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
 function toGuestPath(paths: GuestPaths, inputPath: string): string {
@@ -453,9 +421,7 @@ function toGuestPath(paths: GuestPaths, inputPath: string): string {
   if (path.isAbsolute(trimmed)) {
     if (isInsideHostPath(paths.localCwd, trimmed)) {
       const relativePath = path.relative(paths.localCwd, trimmed);
-      return relativePath
-        ? path.posix.join(paths.root, toPosix(relativePath))
-        : paths.root;
+      return relativePath ? path.posix.join(paths.root, toPosix(relativePath)) : paths.root;
     }
     // Absolute guest path (or outside the workspace) — pass through.
     return path.posix.resolve("/", toPosix(trimmed));
@@ -467,19 +433,14 @@ function toGuestPath(paths: GuestPaths, inputPath: string): string {
 // Tool operations over the VM (vm.fs / vm.exec)
 // ---------------------------------------------------------------------------
 
-function createGondolinReadOps(
-  vm: GondolinVM,
-  paths: GuestPaths,
-): ReadOperations {
+function createGondolinReadOps(vm: GondolinVM, paths: GuestPaths): ReadOperations {
   return {
     readFile: async (filePath) => vm.fs.readFile(toGuestPath(paths, filePath)),
     access: async (filePath) => {
       await vm.fs.access(toGuestPath(paths, filePath));
     },
     detectImageMimeType: async (filePath) => {
-      const ext = path.posix
-        .extname(toGuestPath(paths, filePath))
-        .toLowerCase();
+      const ext = path.posix.extname(toGuestPath(paths, filePath)).toLowerCase();
       if (ext === ".png") return "image/png";
       if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
       if (ext === ".gif") return "image/gif";
@@ -489,10 +450,7 @@ function createGondolinReadOps(
   };
 }
 
-function createGondolinWriteOps(
-  vm: GondolinVM,
-  paths: GuestPaths,
-): WriteOperations {
+function createGondolinWriteOps(vm: GondolinVM, paths: GuestPaths): WriteOperations {
   return {
     writeFile: async (filePath, content) => {
       await vm.fs.writeFile(toGuestPath(paths, filePath), content, {
@@ -505,10 +463,7 @@ function createGondolinWriteOps(
   };
 }
 
-function createGondolinEditOps(
-  vm: GondolinVM,
-  paths: GuestPaths,
-): EditOperations {
+function createGondolinEditOps(vm: GondolinVM, paths: GuestPaths): EditOperations {
   const readOps = createGondolinReadOps(vm, paths);
   const writeOps = createGondolinWriteOps(vm, paths);
   return {
@@ -543,18 +498,13 @@ async function walkGuestFiles(
   const stat = await vm.fs.stat(root, { signal });
   if (!stat.isDirectory()) return visit(root, path.posix.basename(root));
 
-  const walkDirectory = async (
-    dir: string,
-    relativeDir: string,
-  ): Promise<boolean> => {
+  const walkDirectory = async (dir: string, relativeDir: string): Promise<boolean> => {
     if (signal?.aborted) throw new Error("Operation aborted");
     const entries = await vm.fs.listDir(dir, { signal });
     for (const entry of entries) {
       if (entry === ".git" || entry === "node_modules") continue;
       const guestPath = path.posix.join(dir, entry);
-      const relativePath = relativeDir
-        ? path.posix.join(relativeDir, entry)
-        : entry;
+      const relativePath = relativeDir ? path.posix.join(relativeDir, entry) : entry;
       let entryStat: VmStat;
       try {
         entryStat = await vm.fs.stat(guestPath, { signal });
@@ -581,16 +531,10 @@ function matchesToolGlob(relativePath: string, pattern: string): boolean {
       path.posix.matchesGlob(relativePath, `**/${normalizedPattern}`)
     );
   }
-  return path.posix.matchesGlob(
-    path.posix.basename(relativePath),
-    normalizedPattern,
-  );
+  return path.posix.matchesGlob(path.posix.basename(relativePath), normalizedPattern);
 }
 
-function createGondolinFindOps(
-  vm: GondolinVM,
-  paths: GuestPaths,
-): FindOperations {
+function createGondolinFindOps(vm: GondolinVM, paths: GuestPaths): FindOperations {
   return {
     exists: async (filePath) => {
       try {
@@ -620,8 +564,7 @@ function createLineMatcher(
 ) {
   if (literal) {
     const needle = ignoreCase ? pattern.toLowerCase() : pattern;
-    return (line: string) =>
-      (ignoreCase ? line.toLowerCase() : line).includes(needle);
+    return (line: string) => (ignoreCase ? line.toLowerCase() : line).includes(needle);
   }
   const regex = new RegExp(pattern, ignoreCase ? "i" : undefined);
   return (line: string) => regex.test(line);
@@ -641,10 +584,7 @@ function appendGrepBlock(params: {
       : params.lineIndex;
   const end =
     params.contextLines > 0
-      ? Math.min(
-          params.lines.length - 1,
-          params.lineIndex + params.contextLines,
-        )
+      ? Math.min(params.lines.length - 1, params.lineIndex + params.contextLines)
       : params.lineIndex;
 
   for (let index = start; index <= end; index++) {
@@ -652,9 +592,7 @@ function appendGrepBlock(params: {
     const { text, wasTruncated } = truncateLine(rawLine.replace(/\r/g, ""));
     if (wasTruncated) linesTruncated = true;
     const separator = index === params.lineIndex ? ":" : "-";
-    params.outputLines.push(
-      `${params.relativePath}${separator}${index + 1}${separator} ${text}`,
-    );
+    params.outputLines.push(`${params.relativePath}${separator}${index + 1}${separator} ${text}`);
   }
   return linesTruncated;
 }
@@ -668,13 +606,8 @@ async function executeGondolinGrep(
   const root = toGuestPath(paths, params.path ?? ".");
   const rootStat = await vm.fs.stat(root, { signal });
   const rootIsDirectory = rootStat.isDirectory();
-  const matcher = createLineMatcher(
-    params.pattern,
-    params.literal,
-    params.ignoreCase,
-  );
-  const contextLines =
-    params.context && params.context > 0 ? params.context : 0;
+  const matcher = createLineMatcher(params.pattern, params.literal, params.ignoreCase);
+  const contextLines = params.context && params.context > 0 ? params.context : 0;
   const effectiveLimit = Math.max(1, params.limit ?? DEFAULT_GREP_LIMIT);
   const outputLines: string[] = [];
   const details: GrepToolDetails = {};
@@ -687,21 +620,15 @@ async function executeGondolinGrep(
     root,
     async (guestPath, relativePath) => {
       if (matchCount >= effectiveLimit) return false;
-      if (params.glob && !matchesToolGlob(relativePath, params.glob))
-        return true;
+      if (params.glob && !matchesToolGlob(relativePath, params.glob)) return true;
       let content: string;
       try {
         content = await vm.fs.readFile(guestPath, { encoding: "utf8", signal });
       } catch {
         return true;
       }
-      const lines = content
-        .replace(/\r\n/g, "\n")
-        .replace(/\r/g, "\n")
-        .split("\n");
-      const displayPath = rootIsDirectory
-        ? relativePath
-        : path.posix.basename(guestPath);
+      const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+      const displayPath = rootIsDirectory ? relativePath : path.posix.basename(guestPath);
       for (let index = 0; index < lines.length; index++) {
         if (signal?.aborted) throw new Error("Operation aborted");
         if (!matcher(lines[index] ?? "")) continue;
@@ -790,9 +717,7 @@ function piSessionVars(ctx: ExtensionContext | undefined): Record<string, string
  * are dropped.
  */
 function parseEnvDump(stdout: string): Record<string, string> {
-  const raw = Buffer.from(stdout.replace(/\s/g, ""), "base64").toString(
-    "utf8",
-  );
+  const raw = Buffer.from(stdout.replace(/\s/g, ""), "base64").toString("utf8");
   const env: Record<string, string> = {};
   for (const entry of raw.split("\0")) {
     const eq = entry.indexOf("=");
@@ -817,8 +742,7 @@ async function captureEnvDump(
   const result = await vm.exec(argv, cwd ? { cwd } : {});
   if (result.exitCode !== 0)
     throw new Error(result.stderr.trim() || `${what} exited ${result.exitCode}`);
-  if (!result.stdout)
-    throw new Error(`${what} produced no output`);
+  if (!result.stdout) throw new Error(`${what} produced no output`);
   return parseEnvDump(result.stdout);
 }
 
@@ -831,10 +755,7 @@ async function captureEnvDump(
  * stdout) and parses it into a plain map that callers inject via the exec
  * env.
  */
-async function captureDirenvEnv(
-  vm: GondolinVM,
-  cwd: string,
-): Promise<Record<string, string>> {
+async function captureDirenvEnv(vm: GondolinVM, cwd: string): Promise<Record<string, string>> {
   return captureEnvDump(
     vm,
     ["direnv", "exec", ".", "/bin/sh", "-c", "env -0 | base64"],
@@ -851,16 +772,8 @@ async function captureDirenvEnv(
  * injected PATH (it unconditionally resets it). This capture is cheap:
  * sourcing profiles never triggers a nix evaluation.
  */
-async function captureLoginEnv(
-  vm: GondolinVM,
-  shellPath: string,
-): Promise<Record<string, string>> {
-  return captureEnvDump(
-    vm,
-    [shellPath, "-lc", "env -0 | base64"],
-    undefined,
-    "login env capture",
-  );
+async function captureLoginEnv(vm: GondolinVM, shellPath: string): Promise<Record<string, string>> {
+  return captureEnvDump(vm, [shellPath, "-lc", "env -0 | base64"], undefined, "login env capture");
 }
 
 function createGondolinBashOps(
@@ -936,10 +849,7 @@ export default function (pi: ExtensionAPI) {
   // The host cwd is mounted at /workspace/<basename> (buildSpec's mount),
   // and the tools run in the spec's cwd, which defaults to that mount but a
   // project profile (.pi/ginger.json) can override with `cwd`.
-  const guestWorkspace = path.posix.join(
-    GUEST_WORKSPACE_ROOT,
-    path.basename(localCwd),
-  );
+  const guestWorkspace = path.posix.join(GUEST_WORKSPACE_ROOT, path.basename(localCwd));
   let guestCwd = guestWorkspace;
 
   let vm: GondolinVM | undefined;
@@ -976,26 +886,20 @@ export default function (pi: ExtensionAPI) {
 
   function checkpointDir(): string {
     return path.join(
-      process.env.GINGER_CACHE_DIR?.trim() ||
-        path.join(os.homedir(), ".cache", "ginger"),
+      process.env.GINGER_CACHE_DIR?.trim() || path.join(os.homedir(), ".cache", "ginger"),
       "checkpoints",
     );
   }
 
   async function startVm(ctx?: ExtensionContext): Promise<GondolinVM> {
-    ctx?.ui.setStatus(
-      "ginger",
-      ctx.ui.theme.fg("accent", `Ginger: starting VM for ${localCwd}`),
-    );
+    ctx?.ui.setStatus("ginger", ctx.ui.theme.fg("accent", `Ginger: starting VM for ${localCwd}`));
     const g = await loadGinger();
     if (!g)
       throw new Error(
         "ginger not found (no `ginger` on PATH and no GINGER_SRC set) — cannot start the VM; tools will fail until ginger is installed",
       );
 
-    const piId = ctx
-      ? String(ctx.sessionManager.getSessionId())
-      : `pid-${process.pid}`;
+    const piId = ctx ? String(ctx.sessionManager.getSessionId()) : `pid-${process.pid}`;
     const wsPath = localCwd;
     // Display name for this session's snapshots (label name=), shown by
     // `ginger ls` and used for matching — as if `ginger snap -n <name>` had
@@ -1024,9 +928,7 @@ export default function (pi: ExtensionAPI) {
       origin = "seeded";
     } else {
       const mine = await gingerCall(() =>
-        g.checkpoints
-          .listCheckpoints()
-          .filter((m) => g.spec.parseLabel(m.label ?? "").pi === piId),
+        g.checkpoints.listCheckpoints().filter((m) => g.spec.parseLabel(m.label ?? "").pi === piId),
       );
       if (mine.length > 0) {
         // listCheckpoints() is newest-first.
@@ -1091,8 +993,7 @@ export default function (pi: ExtensionAPI) {
     // and the system-prompt line below.
     try {
       const access = g.sessions.readSessionAccess(created.id);
-      vmIngressUrl =
-        typeof access?.ingress?.url === "string" ? access.ingress.url : undefined;
+      vmIngressUrl = typeof access?.ingress?.url === "string" ? access.ingress.url : undefined;
     } catch {
       vmIngressUrl = undefined;
     }
@@ -1101,8 +1002,7 @@ export default function (pi: ExtensionAPI) {
     vmSpec = spec;
     vmPiId = piId;
     vmOrigin = origin;
-    guestCwd =
-      typeof spec.cwd === "string" && spec.cwd ? spec.cwd : guestWorkspace;
+    guestCwd = typeof spec.cwd === "string" && spec.cwd ? spec.cwd : guestWorkspace;
 
     // Register the session (spec sidecar) so `ginger ls` shows it and other
     // ginger clients can attach/exec against it. Best effort: a missing
@@ -1115,11 +1015,7 @@ export default function (pi: ExtensionAPI) {
         "error",
       );
     }
-    const bashProbe = await created.exec([
-      "/bin/sh",
-      "-lc",
-      "command -v bash || true",
-    ]);
+    const bashProbe = await created.exec(["/bin/sh", "-lc", "command -v bash || true"]);
     shellPath = bashProbe.stdout.trim() || "/bin/sh";
 
     // Capture the login-shell environment once (profiles, profile.d,
@@ -1178,10 +1074,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    ctx?.ui.setStatus(
-      "ginger",
-      ctx.ui.theme.fg("accent", vmStatusLabel(created.id)),
-    );
+    ctx?.ui.setStatus("ginger", ctx.ui.theme.fg("accent", vmStatusLabel(created.id)));
     ctx?.ui.notify(
       `Ginger VM ${origin === "fresh" ? "started" : origin === "resumed" ? "resumed from snapshot" : "started from GINGER_PI_SNAPSHOT"}. ${localCwd} is mounted at ${guestWorkspace}; tools run in ${guestCwd}.${vmIngressUrl ? ` Ingress: ${vmIngressUrl}` : ""}`,
       "info",
@@ -1242,18 +1135,14 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("ginger", undefined);
       return;
     }
-    ctx.ui.setStatus(
-      "ginger",
-      ctx.ui.theme.fg("muted", "Ginger: snapshotting"),
-    );
+    ctx.ui.setStatus("ginger", ctx.ui.theme.fg("muted", "Ginger: snapshotting"));
     const g = await loadGinger();
     try {
       if (g && activeSpec) {
         // Same layout as `ginger snap`: qcow2 + 0600 JSON sidecar in the
         // checkpoint dir, label keeps pi=<id> so the next start of this pi
         // session resumes it.
-        const version =
-          g.envInfo?.version ?? process.env.GINGER_VERSION ?? "dev";
+        const version = g.envInfo?.version ?? process.env.GINGER_VERSION ?? "dev";
         const name = `ginger-${String(version).replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}`;
         const dir = checkpointDir();
         fs.mkdirSync(dir, { recursive: true });
@@ -1274,13 +1163,10 @@ export default function (pi: ExtensionAPI) {
             g.checkpoints
               .listCheckpoints()
               .filter(
-                (m) =>
-                  g.spec.parseLabel(m.label ?? "").pi === activePiId &&
-                  m.path !== outPath,
+                (m) => g.spec.parseLabel(m.label ?? "").pi === activePiId && m.path !== outPath,
               ),
           );
-          if (stale.length > 0)
-            await gingerCall(() => g.checkpoints.removeCheckpoints(stale));
+          if (stale.length > 0) await gingerCall(() => g.checkpoints.removeCheckpoints(stale));
         }
         ctx.ui.notify(`Ginger VM snapshot saved: ${outPath}`, "info");
       }
@@ -1358,10 +1244,7 @@ export default function (pi: ExtensionAPI) {
           "error",
         );
       } finally {
-        ctx.ui.setStatus(
-          "ginger",
-          ctx.ui.theme.fg("accent", vmStatusLabel(activeVm.id)),
-        );
+        ctx.ui.setStatus("ginger", ctx.ui.theme.fg("accent", vmStatusLabel(activeVm.id)));
       }
     },
   });
@@ -1404,16 +1287,11 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const activeVm = await ensureVm(ctx);
       const tool = createBashTool(guestCwd, {
-        operations: createGondolinBashOps(
-          activeVm,
-          guestPaths(),
-          shellPath,
-          {
-            ...(loginEnv ?? {}),
-            ...(direnvEnv ?? {}),
-            ...piSessionVars(ctx),
-          },
-        ),
+        operations: createGondolinBashOps(activeVm, guestPaths(), shellPath, {
+          ...(loginEnv ?? {}),
+          ...(direnvEnv ?? {}),
+          ...piSessionVars(ctx),
+        }),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -1452,16 +1330,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("user_bash", async (_event, ctx) => {
     const activeVm = await ensureVm(ctx);
     return {
-      operations: createGondolinBashOps(
-        activeVm,
-        guestPaths(),
-        shellPath,
-        {
-          ...(loginEnv ?? {}),
-          ...(direnvEnv ?? {}),
-          ...piSessionVars(ctx),
-        },
-      ),
+      operations: createGondolinBashOps(activeVm, guestPaths(), shellPath, {
+        ...(loginEnv ?? {}),
+        ...(direnvEnv ?? {}),
+        ...piSessionVars(ctx),
+      }),
     };
   });
 

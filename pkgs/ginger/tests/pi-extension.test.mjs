@@ -155,10 +155,7 @@ async function runBash(pi, ctx, id) {
 
   // C. ingress URL surfaced everywhere
   const access = JSON.parse(
-    fs.readFileSync(
-      path.join(ROOT, "cache", "sessions", vm.id, "access.json"),
-      "utf8",
-    ),
+    fs.readFileSync(path.join(ROOT, "cache", "sessions", vm.id, "access.json"), "utf8"),
   );
   assert.equal(access.ingress.url, "http://127.0.0.1:4711/", "access.json ingress url");
   assert.ok(
@@ -179,10 +176,7 @@ async function runBash(pi, ctx, id) {
   );
   assert.equal(last.opts.cwd, "/workspace/ws", "bash cwd is guest spec cwd");
   assert.equal(last.opts.env.GINGER_TEST_VAR, "run1", "captured direnv env injected");
-  assert.ok(
-    (last.opts.env.PATH ?? "").startsWith("/opt/devshell1/bin:"),
-    "devshell PATH injected",
-  );
+  assert.ok((last.opts.env.PATH ?? "").startsWith("/opt/devshell1/bin:"), "devshell PATH injected");
   assert.equal(last.opts.env.PI_SESSION_ID, "pi-e2e-1", "pi session vars still present");
   assert.equal(last.opts.env.NIX_BASE, "yes", "login baseline layered under direnv env");
   assert.equal(last.opts.env._, undefined, "volatile _ var stripped from captures");
@@ -192,7 +186,11 @@ async function runBash(pi, ctx, id) {
     { systemPrompt: `Current working directory: ${WS}` },
     ctx,
   );
-  assert.match(res.systemPrompt, /ingress: http:\/\/127\.0\.0\.1:4711\//, "system prompt has ingress url");
+  assert.match(
+    res.systemPrompt,
+    /ingress: http:\/\/127\.0\.0\.1:4711\//,
+    "system prompt has ingress url",
+  );
   assert.match(res.systemPrompt, /\/reload-direnv/, "system prompt mentions /reload-direnv");
 
   // /ginger status shows ingress URL + env state on demand
