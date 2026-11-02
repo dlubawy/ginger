@@ -99,6 +99,14 @@ Inside `pi`, the ginger extension:
   the exact VM, features (ingress, direnv) included.
 - reports state on demand: `/ginger` shows origin, cwd, ingress URL, and env
   capture status.
+- resolves pi config paths across the host/guest split. pi runs on the host,
+  so its prompt references skills by host paths (`~/.pi/agent/skills/…`). The
+  guest keeps its own curated copy of that config at `/etc/pi/agent` — baked
+  into the image, writable in-guest, and snapshot-persisted (gondolin does not
+  save `/root`). The host agent dir is **never** exposed to the guest (it can
+  hold credentials); file tools translate host agent-dir paths to the guest
+  copy, and a symlink at the literal host path makes those paths work in
+  shell commands too.
 
 The image also boots `playwright-cli`'s dashboard as an idempotent daemon
 and routes it at `/` over ingress; manage the route with the in-guest

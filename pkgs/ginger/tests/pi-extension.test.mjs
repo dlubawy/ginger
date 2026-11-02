@@ -25,6 +25,8 @@
 //   E. /reload-direnv re-captures and subsequent execs see the new env
 //   F. shutdown snapshots only when the session JSONL exists on disk
 //   G. control: no profile -> no ingress, no direnv capture
+//   H. host pi config paths (skills) resolve to the guest-local /etc/pi/agent
+//      copy — never the host dir's content; symlink created for shell use
 
 import fs from "node:fs";
 import os from "node:os";
@@ -45,6 +47,23 @@ fs.writeFileSync(
   path.join(WS, ".pi", "ginger.json"),
   JSON.stringify({ direnv: true, listen: true }, null, 2),
 );
+
+// Host agent dir (stands in for ~/.pi/agent) — must NEVER be served to the
+// guest. The guest's own curated copy lives at /etc/pi/agent (image-baked),
+// stood in for by GUEST_PI below.
+const HOST_AGENT = path.join(ROOT, "host-agent");
+const GUEST_PI = path.join(ROOT, "guest-pi-agent");
+fs.mkdirSync(path.join(HOST_AGENT, "skills", "demo"), { recursive: true });
+fs.writeFileSync(
+  path.join(HOST_AGENT, "skills", "demo", "SKILL.md"),
+  "host skill content (must never be served)\n",
+);
+fs.mkdirSync(path.join(GUEST_PI, "skills", "demo"), { recursive: true });
+fs.writeFileSync(
+  path.join(GUEST_PI, "skills", "demo", "SKILL.md"),
+  "guest skill content\n",
+);
+process.env.PI_CODING_AGENT_DIR = HOST_AGENT; // read by the extension at import
 
 // The extension refuses to run where GINGER_VERSION is set (guest guard).
 delete process.env.GINGER_VERSION;
@@ -67,6 +86,7 @@ if (process.env.PI_SDK_DIR) {
 
 const { default: ext } = await import(EXT);
 const sdkStub = await import(STUB);
+sdkStub.guestPi.dir = GUEST_PI;
 
 function makePi() {
   const handlers = {};
@@ -200,6 +220,29 @@ async function runBash(pi, ctx, id) {
   assert.match(statusMsg, /Ingress: http:\/\/127\.0\.0\.1:4711\//, "/ginger shows ingress url");
   assert.match(statusMsg, /Login env: captured \(2 vars\)/, "/ginger shows login env state");
   assert.match(statusMsg, /Direnv: environment loaded \(3 vars\)/, "/ginger shows direnv state");
+
+  // H. host pi config paths resolve to the guest-local copy
+  const readTool = pi.tools.find((t) => t.name === "read");
+  assert.ok(readTool, "read tool registered");
+  const readRes = await readTool.execute(
+    "read-1",
+    { path: `${HOST_AGENT}/skills/demo/SKILL.md` },
+    new AbortController().signal,
+    () => {},
+    ctx,
+  );
+  const readOut = JSON.stringify(readRes);
+  assert.match(readOut, /guest skill content/, "host skill path served from guest copy");
+  assert.ok(
+    !readOut.includes("must never be served"),
+    "host agent dir content is never exposed",
+  );
+  // literal host paths also work in shell commands via the guest symlink
+  const ln = vm.execCalls.find(
+    (c) => Array.isArray(c.cmd) && c.cmd[0] === "ln" && c.cmd.includes(HOST_AGENT),
+  );
+  assert.ok(ln, "guest symlink created for the host agent dir path");
+  assert.deepEqual(ln.cmd.slice(1), ["-sfn", "/etc/pi/agent", HOST_AGENT]);
 
   // E. /reload-direnv re-captures; next exec sees the new env
   assert.ok(pi.commands["reload-direnv"], "reload-direnv command registered");

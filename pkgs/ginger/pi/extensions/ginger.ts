@@ -49,6 +49,14 @@
  *   - The ingress URL chosen for `listen: true` (ephemeral port) is surfaced
  *     in the start notification and the system-prompt cwd line, and recorded
  *     in ~/.cache/ginger/sessions/<id>/access.json.
+ *   - pi (running on the host) references its config by HOST paths — notably
+ *     skills under <host agent dir>/skills/… in the prompt. The guest keeps
+ *     its own curated copy of that config at /etc/pi/agent (baked into the
+ *     image; writable in-guest and snapshot-persisted, since gondolin does
+ *     not save /root). The host agent dir is never mounted or exposed to the
+ *     guest (it can hold credentials); instead file tools translate host
+ *     agent-dir paths to /etc/pi/agent, and a symlink at the literal host
+ *     path (created at VM start) makes those paths work in shell commands.
  *
  * Environment isolation:
  *   - Tool commands run in the guest with the VM's own environment (image
@@ -402,6 +410,21 @@ interface GuestPaths {
   cwd: string;
 }
 
+/**
+ * pi runs on the host and discovers its config (skills, prompts, …) under
+ * the host agent dir — so its prompt references absolute paths like
+ * /Users/<you>/.pi/agent/skills/<name>/SKILL.md. The guest has its own
+ * curated copy of that config at /etc/pi/agent: baked into the image (the
+ * host dir is NEVER exposed to the guest — it can hold credentials),
+ * writable in-guest, and under /etc because gondolin snapshots do not
+ * persist /root. File tools translate host agent-dir paths to that guest
+ * path (toGuestPath); a symlink created at VM start makes literal host
+ * paths work in shell commands too.
+ */
+const HOST_PI_AGENT_DIR =
+  process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
+const GUEST_PI_AGENT_DIR = "/etc/pi/agent";
+
 function stripAtPrefix(value: string): string {
   return value.startsWith("@") ? value.slice(1) : value;
 }
@@ -422,6 +445,14 @@ function toGuestPath(paths: GuestPaths, inputPath: string): string {
     if (isInsideHostPath(paths.localCwd, trimmed)) {
       const relativePath = path.relative(paths.localCwd, trimmed);
       return relativePath ? path.posix.join(paths.root, toPosix(relativePath)) : paths.root;
+    }
+    // Host pi agent dir -> the guest-local curated copy (skills etc.). The
+    // host dir itself is never mounted or exposed.
+    if (isInsideHostPath(HOST_PI_AGENT_DIR, trimmed)) {
+      const relativePath = path.relative(HOST_PI_AGENT_DIR, trimmed);
+      return relativePath
+        ? path.posix.join(GUEST_PI_AGENT_DIR, toPosix(relativePath))
+        : GUEST_PI_AGENT_DIR;
     }
     // Absolute guest path (or outside the workspace) — pass through.
     return path.posix.resolve("/", toPosix(trimmed));
@@ -1018,6 +1049,22 @@ export default function (pi: ExtensionAPI) {
     const bashProbe = await created.exec(["/bin/sh", "-lc", "command -v bash || true"]);
     shellPath = bashProbe.stdout.trim() || "/bin/sh";
 
+    // Literal host agent-dir paths (e.g. a skill path copied from the prompt
+    // into a shell command) should work in-guest too: alias the host path to
+    // the guest-local /etc/pi/agent. The symlink exposes no host content —
+    // it points only at the image-baked, snapshot-persisted copy. File tools
+    // translate paths themselves (toGuestPath), so this is a shell-command
+    // convenience; best effort either way.
+    try {
+      await created.exec(["mkdir", "-p", path.posix.dirname(HOST_PI_AGENT_DIR)]);
+      await created.exec(["ln", "-sfn", GUEST_PI_AGENT_DIR, HOST_PI_AGENT_DIR]);
+    } catch (err) {
+      ctx?.ui.notify(
+        `Ginger: could not alias ${HOST_PI_AGENT_DIR} in the guest: ${err instanceof Error ? err.message : String(err)}`,
+        "error",
+      );
+    }
+
     // Capture the login-shell environment once (profiles, profile.d,
     // nix-profile PATH, locale…). Tool commands run non-login (`bash -c`)
     // so their env is exactly what we inject; without this baseline they
@@ -1347,7 +1394,7 @@ export default function (pi: ExtensionAPI) {
     } catch {}
     if (!vm) return;
     const localLine = `Current working directory: ${localCwd}`;
-    const guestLine = `Current working directory: ${guestCwd} (Gondolin VM; host workspace mounted at ${guestWorkspace} from ${localCwd}${vmIngressUrl ? `; ingress: ${vmIngressUrl}` : ""}${direnvEnv ? "; direnv environment active — /reload-direnv re-evaluates the .envrc" : ""})`;
+    const guestLine = `Current working directory: ${guestCwd} (Gondolin VM; host workspace mounted at ${guestWorkspace} from ${localCwd}${vmIngressUrl ? `; ingress: ${vmIngressUrl}` : ""}${direnvEnv ? "; direnv environment active — /reload-direnv re-evaluates the .envrc" : ""}; pi config and skills live at ${GUEST_PI_AGENT_DIR} in this VM — host paths under ${HOST_PI_AGENT_DIR} refer to the same files)`;
     const systemPrompt = event.systemPrompt.includes(localLine)
       ? event.systemPrompt.replace(localLine, guestLine)
       : `${event.systemPrompt}\n\n${guestLine}`;

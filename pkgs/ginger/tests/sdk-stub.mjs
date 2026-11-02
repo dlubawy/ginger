@@ -5,10 +5,43 @@
 // builds the result from buffered chunks, which pipe mode never fills). A
 // stub that ignores this silently produces empty env captures — a real bug
 // we shipped once.
+//
+// vm.fs models the SDK's MountRouterProvider: paths route by longest mount
+// prefix; anything unmatched is ENOENT (the router has no guest-rootfs
+// fallback). The guest's /etc/pi/agent content is served from `guestPi.dir`
+// (a test hook) so tests can assert what skill/config paths actually
+// resolve to.
+
+import { promises as fsp } from "node:fs";
+import pathMod from "node:path";
 
 export const calls = { create: [], resume: [], ingress: [], ssh: [] };
 export const vms = [];
 export let dumpCount = 0;
+/** Directory standing in for the guest's /etc/pi/agent (image-baked copy). */
+export const guestPi = { dir: null };
+
+function makeFs() {
+  const enoent = (p) => {
+    const e = new Error(`ENOENT: no such file or directory: ${p}`);
+    e.code = "ENOENT";
+    return e;
+  };
+  const serve = async (p) => {
+    if (guestPi.dir && p.startsWith("/etc/pi/agent")) {
+      const rel = p.slice("/etc/pi/agent".length).replace(/^\//, "");
+      if (!rel) throw enoent(p);
+      return fsp.readFile(pathMod.join(guestPi.dir, rel), "utf8");
+    }
+    throw enoent(p);
+  };
+  return {
+    readFile: serve,
+    access: async (p) => {
+      await serve(p);
+    },
+  };
+}
 
 function makeProc(result, opts = {}) {
   const effective = { ...result };
@@ -53,6 +86,7 @@ function makeVm(options, resumed = false) {
     execCalls,
     checkpointCalls,
     closed: false,
+    fs: makeFs(),
     exec(cmd, opts = {}) {
       execCalls.push({ cmd, opts });
       const flat = Array.isArray(cmd) ? cmd.join(" ") : String(cmd);
