@@ -598,11 +598,7 @@ export function makeVmOptions(spec) {
         writeMode: "deny",
       });
       provider = new sdk.ShadowProvider(secrets, {
-        shouldShadow: sdk.createShadowPathPredicate([
-          "/.git/hooks",
-          "/.direnv",
-          "/.pre-commit-config.yaml",
-        ]),
+        shouldShadow: sdk.createShadowPathPredicate(["/.git/hooks", "/.direnv"]),
         writeMode: "tmpfs",
       });
     }
