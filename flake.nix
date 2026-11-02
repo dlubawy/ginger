@@ -37,7 +37,7 @@
           # extension is loaded as .ts directly by node.
           hostUnstable = import nixpkgs-unstable { inherit system; };
           gingerSrc = builtins.path {
-            path = ./pkgs/ginger;
+            path = ./.;
             name = "ginger-src";
           };
         in
@@ -95,6 +95,7 @@
                   "flake-checker"
                   "check-yaml"
                 ];
+                excludes = [ "pi/" ];
               };
               just =
                 let

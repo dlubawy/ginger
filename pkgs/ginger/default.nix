@@ -21,7 +21,7 @@ let
   # install when stale, and never deletes anything in the agent dir.
   piGingerScript = pkgs.writeTextFile {
     name = "pi-ginger-script";
-    text = (builtins.readFile ./pi/pi-ginger.sh);
+    text = (builtins.readFile ../../pi/pi-ginger.sh);
     executable = true;
     destination = "/pi-ginger.sh";
   };

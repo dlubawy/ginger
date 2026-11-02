@@ -37,10 +37,10 @@ files, environment — lives in the guest.
 
 | Component | Where | What it does |
 | --------- | ----- | ------------ |
-| `ginger` CLI | `pkgs/ginger/src/` | Session and snapshot lifecycle on top of the gondolin host SDK: start, attach, exec, stop, snapshot, rename, remove. |
+| `ginger` CLI | `src/` | Session and snapshot lifecycle on top of the gondolin host SDK: start, attach, exec, stop, snapshot, rename, remove. |
 | The image | `pkgs/ginger/gondolin-image/` | An opinionated Alpine-based OCI image for coding agents: nix + direnv (devshell workflows), git, node, python, and `playwright-cli` with its dashboard served over ingress at VM boot. |
-| pi extension | `pkgs/ginger/pi/extensions/ginger.ts` | Replaces pi's native tools with VM-backed ones; isolates the guest environment from the host; evaluates `.envrc` once at start; surfaces ingress URLs; snapshots per pi session. |
-| pi config + wrapper | `pkgs/ginger/pi/` | A nix-built `~/.pi/agent` config (extensions, skills, prompts, themes, models) and a `pi` host wrapper that keeps it up to date — merging into your existing agent dir, never deleting anything. |
+| pi extension | `pi/extensions/ginger.ts` | Replaces pi's native tools with VM-backed ones; isolates the guest environment from the host; evaluates `.envrc` once at start; surfaces ingress URLs; snapshots per pi session. |
+| pi config + wrapper | `pkgs/ginger/pi.nix` | A nix-built `~/.pi/agent` config (extensions, skills, prompts, themes, models) and a `pi` host wrapper that keeps it up to date — merging into your existing agent dir, never deleting anything. |
 | Nix integration | `flake.nix`, `pkgs/default.nix` | Packages (`ginger`, `gondolin`, `playwright-cli`, `pi`), flake checks (see [tests](pkgs/ginger/tests/README.md)), and a dev shell. |
 
 ## Quick start
@@ -115,16 +115,16 @@ and routes it at `/` over ingress; manage the route with the in-guest
 ## Repository layout
 
 ```
-flake.nix                  packages, checks, dev shell
-pkgs/default.nix           per-system package set wiring
-pkgs/gondolin/             gondolin host SDK + CLI (v0.14.0)
-pkgs/playwright-cli/       playwright-cli as a proper nix package (pinned tarballs)
+flake.nix                          packages, checks, dev shell
+pi/                                pi agent config + extensions + host wrapper
+pkgs/default.nix                   per-system package set wiring
 pkgs/ginger/
-  default.nix, ginger.nix  the ginger CLI package (+ pi wrapper, installer)
-  src/                     CLI: spec, sessions, checkpoints, owner features, UI
-  gondolin-image/          image build: config, rootfs extras, init script
-  pi/                      nix-built pi agent config + extensions + host wrapper
-  tests/                   E2E suites (hermetic extension test + real VM lifecycle)
+  default.nix, ginger.nix, pi.nix  the ginger CLI package (+ pi wrapper, installer)
+  gondolin-image/                  image build: config, rootfs extras, init script
+pkgs/gondolin/                     gondolin host SDK + CLI (v0.14.0)
+pkgs/playwright-cli/               playwright-cli as a proper nix package (pinned tarballs)
+src/                               CLI: spec, sessions, checkpoints, owner features, UI
+tests/                             E2E suites (hermetic extension test + real VM lifecycle)
 ```
 
 ## Development

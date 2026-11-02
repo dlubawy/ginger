@@ -8,7 +8,7 @@ let
   inherit (pkgs) writeShellApplication;
 
   version = "0.0.1";
-  piHome = (import ./pi { inherit pkgs version; });
+  piHome = (import ./pi.nix { inherit pkgs version; });
   gondolinImage = (
     import ./gondolin-image {
       inherit
@@ -23,7 +23,7 @@ let
   # Co-locate the ginger source files in the nix store so the ESM imports
   # between them resolve at runtime.
   gingerSrc = builtins.path {
-    path = ./src;
+    path = ../../src;
     name = "ginger-src-${version}";
   };
 in

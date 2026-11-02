@@ -59,10 +59,7 @@ fs.writeFileSync(
   "host skill content (must never be served)\n",
 );
 fs.mkdirSync(path.join(GUEST_PI, "skills", "demo"), { recursive: true });
-fs.writeFileSync(
-  path.join(GUEST_PI, "skills", "demo", "SKILL.md"),
-  "guest skill content\n",
-);
+fs.writeFileSync(path.join(GUEST_PI, "skills", "demo", "SKILL.md"), "guest skill content\n");
 process.env.PI_CODING_AGENT_DIR = HOST_AGENT; // read by the extension at import
 
 // The extension refuses to run where GINGER_VERSION is set (guest guard).
@@ -233,10 +230,7 @@ async function runBash(pi, ctx, id) {
   );
   const readOut = JSON.stringify(readRes);
   assert.match(readOut, /guest skill content/, "host skill path served from guest copy");
-  assert.ok(
-    !readOut.includes("must never be served"),
-    "host agent dir content is never exposed",
-  );
+  assert.ok(!readOut.includes("must never be served"), "host agent dir content is never exposed");
   // literal host paths also work in shell commands via the guest symlink
   const ln = vm.execCalls.find(
     (c) => Array.isArray(c.cmd) && c.cmd[0] === "ln" && c.cmd.includes(HOST_AGENT),

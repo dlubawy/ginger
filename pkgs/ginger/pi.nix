@@ -5,20 +5,20 @@ let
   # OS metadata) don't break the build. Note each store path wraps the tree
   # in a directory of its own name, hence the '/<name>' on the copies below.
   extensions = lib.fileset.toSource {
-    root = ./.;
-    fileset = ./extensions;
+    root = ../../pi;
+    fileset = ../../pi/extensions;
   };
   skills = lib.fileset.toSource {
-    root = ./.;
-    fileset = ./skills;
+    root = ../../pi;
+    fileset = ../../pi/skills;
   };
   prompts = lib.fileset.toSource {
-    root = ./.;
-    fileset = ./prompts;
+    root = ../../pi;
+    fileset = ../../pi/prompts;
   };
   themes = lib.fileset.toSource {
-    root = ./.;
-    fileset = ./themes;
+    root = ../../pi;
+    fileset = ../../pi/themes;
   };
 in
 # The ginger-built pi agent configuration, laid out as etc/pi/agent so the
@@ -26,9 +26,9 @@ in
 # installed onto a host at ~/.pi/agent (see ../default.nix's pi wrapper).
 pkgs.runCommand "pi-agent-config-${version}" { } ''
   mkdir -p $out/etc/pi/agent
-  install -m 0644 ${./settings.json}    $out/etc/pi/agent/settings.json
-  install -m 0644 ${./models.json}      $out/etc/pi/agent/models.json
-  install -m 0644 ${./formatters.json}  $out/etc/pi/agent/formatters.json
+  install -m 0644 ${../../pi/settings.json}    $out/etc/pi/agent/settings.json
+  install -m 0644 ${../../pi/models.json}      $out/etc/pi/agent/models.json
+  install -m 0644 ${../../pi/formatters.json}  $out/etc/pi/agent/formatters.json
   cp -r ${extensions}/extensions $out/etc/pi/agent/extensions
   cp -r ${skills}/skills         $out/etc/pi/agent/skills
   cp -r ${prompts}/prompts       $out/etc/pi/agent/prompts
