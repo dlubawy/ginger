@@ -26,7 +26,7 @@ cat > /root/.gitconfig <<EOF
 [safe]
 	directory = *
 [user]
-    email = ginger@andrewlubawy.com
+    email = ginger-agent@andrewlubawy.com
     name = Ginger Agent
 EOF
 
