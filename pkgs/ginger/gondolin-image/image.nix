@@ -58,6 +58,7 @@ let
         chromium
         curl
         direnv
+        glibc
         fd
         fontconfig
         git
@@ -89,6 +90,14 @@ let
       rm ./usr/bin/sandboxfs
       rm ./usr/bin/sandboxingress
       rm ./usr/bin/sandboxssh
+      # The alpine base ships a musl ldd at /usr/bin/ldd. Native-module
+      # installers (rolldown, esbuild, …) detect the system libc by running
+      # `ldd --version` and grepping for "musl" — which misidentifies this
+      # hybrid image and makes them pick musl builds of native bindings even
+      # though node is a glibc build from nix. Replace it with the glibc ldd,
+      # which also inspects the many glibc binaries in this image correctly.
+      rm -f ./usr/bin/ldd
+      ln -s ${containerPkgs.glibc.bin}/bin/ldd ./usr/bin/ldd
     '';
   };
 in
