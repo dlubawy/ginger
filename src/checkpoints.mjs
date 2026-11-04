@@ -66,10 +66,27 @@ export function removeCheckpoints(checkpoints) {
 
 /**
  * Write a checkpoint's metadata sidecar. The embedded spec may carry secret
- * values and passphrases, so the file is mode 0600.
+ * values and passphrases, so the file is mode 0600. Written to a temp file
+ * and renamed so a crash mid-write never leaves a truncated (and therefore
+ * unparseable) sidecar next to its disk image.
  */
 export function writeCheckpointMeta(meta) {
-  fs.writeFileSync(`${meta.path}.json`, JSON.stringify(meta, null, 2), {
-    mode: 0o600,
-  });
+  const target = `${meta.path}.json`;
+  const tmp = `${target}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(meta, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, target);
+}
+
+/**
+ * Disk images with no metadata sidecar — snapshots whose writer died between
+ * writing the qcow and its .json. They are unusable (no label/spec) but must
+ * not vanish silently: `ginger ls` reports them.
+ */
+export function orphanedCheckpoints() {
+  if (!fs.existsSync(checkpointDir)) return [];
+  return fs
+    .readdirSync(checkpointDir)
+    .filter((f) => f.endsWith(".qcow2") && !fs.existsSync(`${path.join(checkpointDir, f)}.json`))
+    .map((f) => path.join(checkpointDir, f))
+    .sort();
 }

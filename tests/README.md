@@ -14,7 +14,14 @@ Covers: spec → `VM.create` options; owner features (ingress for `listen`,
 `direnv allow`); ingress URL surfacing (access.json, notification, system
 prompt, `/ginger` status); login-env + direnv env capture-once semantics and
 per-exec injection; non-login bash argv; `/reload-direnv`; snapshotting only
-when the session JSONL exists on disk.
+when the session JSONL exists on disk; fork inheritance across extension
+instances (pi re-invokes the factory per session, so forks adopt the
+parent's running VM via module-scope state; labels/snapshots keyed by the
+tree's root id via the `parentSession` chain); background snapshots on `/new` (the shutdown handler
+returns while the qcow is in flight, under a heartbeat lifecycle marker that
+keeps `ginger ls`'s session-dir GC away mid-snapshot); pre-boot cleanup of a
+tree's older snapshots; and the lifecycle-marker protocol itself (visible to
+other pids, ignored for its own pid, expires when unrefreshed).
 
 ```sh
 # PI_SDK_DIR is optional; when set, the extension runs from a temp tree with

@@ -27,6 +27,15 @@
 //   G. control: no profile -> no ingress, no direnv capture
 //   H. host pi config paths (skills) resolve to the guest-local /etc/pi/agent
 //      copy — never the host dir's content; symlink created for shell use
+//   I. fork inheritance ACROSS extension instances: pi re-invokes the
+//      factory on every session replacement, so a fork adopts the parent's
+//      running VM via module-scope state (no snapshot, no second VM),
+//      labels/snapshots keyed by the tree's ROOT id
+//   J. /new snapshots in the BACKGROUND (handler returns while the qcow is
+//      still in flight) under a lifecycle marker that keeps `ginger ls`'s GC
+//      away from the session dir mid-snapshot; sidecar written on completion
+//   K. resume of a forked tree finds the root's snapshot; pre-boot cleanup
+//      drops the tree's older snapshots
 
 import fs from "node:fs";
 import os from "node:os";
@@ -307,6 +316,236 @@ async function runBash(pi, ctx, id) {
     "reload without direnv reports an error",
   );
   console.log("scenario 2 (no profile): PASS");
+}
+
+// ---- Scenario 3: fork inheritance + background snapshot + GC race --------
+{
+  for (const k of Object.keys(sdkStub.calls)) sdkStub.calls[k].length = 0;
+  fs.rmSync(path.join(ROOT, "cache"), { recursive: true, force: true });
+  const vmsBefore = sdkStub.vms.length; // vms is append-only across scenarios
+
+  // A pi session tree on disk: root-1 <- child-1 <- grand-1. Each header's
+  // parentSession is a PATH to the parent session file (pi's real format).
+  const rootFile = path.join(ROOT, "root-session.jsonl");
+  const childFile = path.join(ROOT, "child-session.jsonl");
+  const grandFile = path.join(ROOT, "grand-session.jsonl");
+  fs.writeFileSync(rootFile, JSON.stringify({ type: "session", id: "root-1" }) + "\n");
+  fs.writeFileSync(
+    childFile,
+    JSON.stringify({ type: "session", id: "child-1", parentSession: rootFile }) + "\n",
+  );
+  fs.writeFileSync(
+    grandFile,
+    JSON.stringify({ type: "session", id: "grand-1", parentSession: childFile }) + "\n",
+  );
+
+  const mkCtx = (file, id) => {
+    const notifications = [];
+    const ctx = makeCtx(notifications);
+    ctx.sessionManager.getSessionId = () => id;
+    ctx.sessionManager.getSessionFile = () => file;
+    return { ctx, notifications };
+  };
+
+  // pi invalidates a replaced session's ctx: every property access on it
+  // then throws (assertActive). Anything an async flow still needs —
+  // notably the ui object — must have been captured while the ctx was live.
+  const invalidateCtx = (ctx) => {
+    for (const key of Object.getOwnPropertyNames(ctx)) {
+      Object.defineProperty(ctx, key, {
+        configurable: true,
+        get: () => {
+          throw new Error("This extension ctx is stale after session replacement or reload");
+        },
+      });
+    }
+  };
+
+  // pi re-invokes the extension factory on every session replacement (new
+  // runtime → new closure). Each session below gets its own extension
+  // instance; state can only cross the boundary via module scope — exactly
+  // the shape of the real /fork bug (a second VM was created because the
+  // fresh instance's closure had no knowledge of the parent's VM).
+  // The guest guard bails when GINGER_VERSION is set (it is seeded inside
+  // guests); the test sets it for spec assertions, so mask it around each
+  // factory invocation.
+  const newExt = () => {
+    const saved = process.env.GINGER_VERSION;
+    delete process.env.GINGER_VERSION;
+    try {
+      const p = makePi();
+      ext(p.api);
+      return p;
+    } finally {
+      if (saved !== undefined) process.env.GINGER_VERSION = saved;
+    }
+  };
+
+  // I. The root session starts a fresh VM; the label is keyed by the ROOT.
+  setGingerEnv();
+  const rootPi = newExt();
+  const { ctx: rootCtx } = mkCtx(rootFile, "root-1");
+  await rootPi.handlers.session_start({ reason: "startup" }, rootCtx);
+  const vm = sdkStub.vms.at(-1);
+  assert.equal(sdkStub.calls.create.length, 1, "root starts a VM");
+  assert.match(sdkStub.calls.create[0].sessionLabel, /pi=root-1/, "label keyed by ROOT id");
+
+  // A fork hands the running VM to the child: no snapshot, no second VM —
+  // and the child is a NEW extension instance (fresh closure).
+  await rootPi.handlers.session_shutdown({ reason: "fork" }, rootCtx);
+  assert.equal(vm.checkpointCalls.length, 0, "fork does not snapshot");
+  assert.ok(!vm.closed, "fork leaves the VM running for the child");
+
+  const childPi = newExt();
+  const { ctx: childCtx } = mkCtx(childFile, "child-1");
+  await childPi.handlers.session_start({ reason: "fork" }, childCtx);
+  assert.equal(sdkStub.calls.create.length, 1, "fork does NOT start a second VM");
+  assert.equal(sdkStub.vms.length, vmsBefore + 1, "still exactly one VM in the tree");
+
+  // A deep fork (two hops from the root) must walk the parentSession chain.
+  await childPi.handlers.session_shutdown({ reason: "fork" }, childCtx);
+  const grandPi = newExt();
+  const { ctx: grandCtx, notifications: grandNotices } = mkCtx(grandFile, "grand-1");
+  await grandPi.handlers.session_start({ reason: "fork" }, grandCtx);
+  assert.equal(sdkStub.calls.create.length, 1, "deep fork still shares the VM");
+
+  // J. /new from the grandchild: background snapshot. Hold the checkpoint in
+  // flight and inspect the window.
+  sdkStub.control.checkpointHook = () =>
+    new Promise((r) => (sdkStub.control.releaseCheckpoint = r));
+  const newFile = path.join(ROOT, "new-session.jsonl");
+  fs.writeFileSync(newFile, JSON.stringify({ type: "session", id: "new-1" }) + "\n");
+  const { ctx: newCtx } = mkCtx(newFile, "new-1");
+
+  await grandPi.handlers.session_shutdown({ reason: "new" }, grandCtx);
+  // pi replaces the session right after this handler — from now on every
+  // property access on grandCtx throws. The in-flight background snapshot
+  // must complete using only what it captured (its ui object).
+  invalidateCtx(grandCtx);
+  // The handler returned without waiting for the checkpoint (the hook holds
+  // it forever); poll until the background flow reaches vm.checkpoint().
+  const startedBy = Date.now() + 5000;
+  while (vm.checkpointCalls.length === 0 && Date.now() < startedBy)
+    await new Promise((r) => setTimeout(r, 25));
+  assert.equal(vm.checkpointCalls.length, 1, "/new snapshots the tree's VM in the background");
+  assert.ok(!vm.closed, "handler returned while the snapshot is still in flight");
+
+  const sdir = path.join(ROOT, "cache", "sessions", vm.id);
+  const lifecycleFile = path.join(sdir, "lifecycle");
+  assert.ok(fs.existsSync(lifecycleFile), "lifecycle marker present mid-snapshot");
+  assert.equal(JSON.parse(fs.readFileSync(lifecycleFile, "utf8")).op, "snap", "marker op is snap");
+
+  // Backdate the session dir's other files: a `ginger ls` GC running now must
+  // not remove the dir (fresh marker mtime + live marker) mid-snapshot.
+  fs.writeFileSync(path.join(sdir, "spec.json"), "{}");
+  const old = new Date(Date.now() - 120_000);
+  fs.utimesSync(path.join(sdir, "spec.json"), old, old);
+  const { gcSessionDirs } = await import(`${GINGER_SRC}/sessions.mjs`);
+  gcSessionDirs([]);
+  assert.ok(fs.existsSync(path.join(sdir, "spec.json")), "session dir survives ginger GC mid-snapshot");
+
+  // Release the checkpoint; the background flow must finish on its own:
+  // qcow + sidecar, marker released, VM closed.
+  sdkStub.control.releaseCheckpoint();
+  const cdir = path.join(ROOT, "cache", "checkpoints");
+  const deadline = Date.now() + 5000;
+  let metas = [];
+  while (Date.now() < deadline) {
+    metas = fs.existsSync(cdir)
+      ? fs.readdirSync(cdir).filter((f) => f.endsWith(".json"))
+      : [];
+    if (metas.length > 0 && vm.closed) break;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.equal(metas.length, 1, "background snapshot wrote its metadata sidecar");
+  const meta = JSON.parse(fs.readFileSync(path.join(cdir, metas[0]), "utf8"));
+  assert.match(meta.label, /pi=root-1/, "snapshot labeled with the ROOT id");
+  assert.ok(!fs.existsSync(lifecycleFile), "lifecycle marker released after snapshot");
+  assert.ok(vm.closed, "VM closed after background snapshot");
+  assert.ok(
+    grandNotices.some(([kind, msg]) => kind === "info" && /snapshot saved/.test(msg)),
+    "background snapshot reported via the captured ui (stale ctx never touched)",
+  );
+  assert.ok(
+    !grandNotices.some(([, msg]) => /stale/.test(String(msg))),
+    "no stale-ctx error surfaced",
+  );
+  sdkStub.control.checkpointHook = null;
+
+  // The brand-new root (/new) starts its own fresh VM (again a NEW instance)
+  // — it does NOT inherit the old tree's snapshot.
+  const newPi = newExt();
+  await newPi.handlers.session_start({ reason: "new" }, newCtx);
+  assert.equal(sdkStub.calls.create.length, 2, "a new root gets a fresh VM");
+  assert.match(
+    sdkStub.calls.create[1].sessionLabel,
+    /pi=new-1/,
+    "new root's label keyed by its own id",
+  );
+
+  // K. Resuming a member of the OLD tree (a new fork of child-1) finds the
+  // root's snapshot — and pre-boot cleanup drops the tree's older ones.
+  const specMod = await import(`${GINGER_SRC}/spec.mjs`);
+  const stalePath = path.join(cdir, "ginger-stale.qcow2");
+  fs.writeFileSync(stalePath, "stale-qcow");
+  fs.writeFileSync(
+    `${stalePath}.json`,
+    JSON.stringify({
+      name: "ginger-stale",
+      path: stalePath,
+      label: specMod.makeLabel({ ws: WS, name: "pi:root-1 -- ws", pi: "root-1" }),
+      spec: { label: "stale", cwd: "/workspace/ws" },
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    }),
+  );
+  const fork2File = path.join(ROOT, "fork2-session.jsonl");
+  fs.writeFileSync(
+    fork2File,
+    JSON.stringify({ type: "session", id: "child-2", parentSession: rootFile }) + "\n",
+  );
+  // Leave the new root's session first (pi fires shutdown for the session
+  // being left) — its VM must not be adopted by the old tree's member.
+  await newPi.handlers.session_shutdown({ reason: "quit" }, newCtx);
+  assert.ok(sdkStub.vms.at(-1).closed, "new root's VM closed on quit");
+  const fork2Pi = newExt();
+  const { ctx: fork2Ctx } = mkCtx(fork2File, "child-2");
+  await fork2Pi.handlers.session_start({ reason: "resume" }, fork2Ctx);
+  assert.equal(sdkStub.calls.resume.length, 1, "tree member resumes the ROOT's snapshot");
+  assert.equal(sdkStub.calls.resume[0].path, meta.path, "resumed from the newest root snapshot");
+  assert.ok(!fs.existsSync(stalePath), "older tree snapshot removed pre-boot");
+  assert.ok(!fs.existsSync(`${stalePath}.json`), "older tree snapshot's sidecar removed pre-boot");
+
+  // The lifecycle marker protocol itself: visible to other pids, invisible
+  // to its own pid, and it expires when the heartbeat stops.
+  const { activeLifecycleOp } = await import(`${GINGER_SRC}/sessions.mjs`);
+  const { spawn: spawnProc } = await import("node:child_process");
+  const sleeper = spawnProc("sleep", ["30"]);
+  try {
+    fs.mkdirSync(sdir, { recursive: true });
+    fs.writeFileSync(
+      lifecycleFile,
+      JSON.stringify({ op: "snap", pid: sleeper.pid, at: new Date().toISOString() }),
+    );
+    assert.equal(activeLifecycleOp(vm.id), "snap", "other live pid's marker is visible");
+    fs.writeFileSync(
+      lifecycleFile,
+      JSON.stringify({ op: "snap", pid: process.pid, at: new Date().toISOString() }),
+    );
+    assert.equal(activeLifecycleOp(vm.id), null, "own pid's marker is ignored");
+    fs.writeFileSync(
+      lifecycleFile,
+      JSON.stringify({ op: "snap", pid: sleeper.pid, at: new Date().toISOString() }),
+    );
+    fs.utimesSync(lifecycleFile, old, old);
+    assert.equal(activeLifecycleOp(vm.id), null, "stale (unrefreshed) marker expires");
+  } finally {
+    sleeper.kill();
+    try {
+      fs.rmSync(lifecycleFile, { force: true });
+    } catch {}
+  }
+
+  console.log("scenario 3 (fork + background snapshot): PASS");
 }
 
 fs.rmSync(ROOT, { recursive: true, force: true });

@@ -7,13 +7,13 @@ import path from "node:path";
 
 import { VERSION, checkpointDir, fail, logDir, sdk } from "./config.mjs";
 import { makeVmOptions, parseListenSpec } from "./spec.mjs";
-import { Step, isAlive, run, tail, waitFor, waitForFile } from "./ui.mjs";
+import { Step, isAlive, run, tail, waitFor } from "./ui.mjs";
 import { writeCheckpointMeta } from "./checkpoints.mjs";
 import {
   activeLifecycleOp,
   readSessionAccess,
   removeSessionLeases,
-  setLifecycleOp,
+  startLifecycleOp,
   writeSessionAccess,
   writeSessionSpec,
 } from "./sessions.mjs";
@@ -214,7 +214,15 @@ export async function runOwner() {
  */
 export async function shutdownSession(session) {
   const step = new Step(`Shutting down session ${session.id}`);
-  setLifecycleOp(session.id, "stop");
+  const lifecycle = startLifecycleOp(session.id, "stop");
+  try {
+    await stopOwner(session, step);
+  } finally {
+    lifecycle.release();
+  }
+}
+
+async function stopOwner(session, step) {
   if (session.pid && isAlive(session.pid)) {
     try {
       process.kill(session.pid, "SIGTERM");
@@ -244,12 +252,35 @@ export async function shutdownSession(session) {
   removeSessionLeases(session.id);
 }
 
+/**
+ * Wait for the checkpoint file to appear after a snapshot request. The qcow
+ * rebase+move can outlive the socket response by a long way on large disks,
+ * so this polls with a generous deadline. If the owner process dies before
+ * the file appears, fail after a grace period (the move runs in the owner) —
+ * otherwise a crashed snapshot would hang for the full deadline.
+ */
+async function waitForCheckpoint(outPath, ownerId) {
+  const deadline = Date.now() + 15 * 60_000;
+  let ownerDiedAt = null;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(outPath)) return true;
+    if (ownerId && !isAlive(ownerId)) {
+      ownerDiedAt ??= Date.now();
+      if (Date.now() - ownerDiedAt > 60_000) return false;
+    } else {
+      ownerDiedAt = null;
+    }
+    await waitFor(1000);
+  }
+  return false;
+}
+
 export async function snapshotSession(session, spec, snapLabel = null) {
   fs.mkdirSync(checkpointDir, { recursive: true });
   const name = `ginger-${VERSION.replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}`;
   const outPath = path.join(checkpointDir, `${name}.qcow2`);
   const step = new Step(`Snapshotting session ${session.id}`);
-  setLifecycleOp(session.id, "snap");
+  const lifecycle = startLifecycleOp(session.id, "snap");
   let result;
   try {
     result = await new Promise((resolve, reject) => {
@@ -275,9 +306,12 @@ export async function snapshotSession(session, spec, snapLabel = null) {
           // Snapshotting stops the VM, so the socket may close before the
           // response; fall back to observing the checkpoint file appear.
           if (settled) return;
-          const ok = await waitForFile(outPath, 60_000);
+          const ok = await waitForCheckpoint(outPath, session.pid);
           if (ok) settle(resolve)({ path: outPath, name });
-          else settle(reject)(err ?? new Error("session closed before snapshot completed"));
+          else
+            settle(reject)(
+              err ?? new Error("session closed before snapshot completed"),
+            );
         },
       });
       client.send({ type: "snapshot", id: 1, path: outPath });
@@ -297,10 +331,18 @@ export async function snapshotSession(session, spec, snapLabel = null) {
     spec: { ...spec, label },
     createdAt: new Date().toISOString(),
   };
-  writeCheckpointMeta(meta);
+  try {
+    writeCheckpointMeta(meta);
+  } catch (err) {
+    // A qcow without its sidecar is an orphan that ginger ls reports — say
+    // so explicitly instead of letting the failure look like a bad snapshot.
+    step.fail(`snapshot written but metadata failed (${err?.message ?? err}) — orphan at ${meta.path}`);
+    process.exit(1);
+  }
   step.succeed(`snapshot saved: ${meta.path}`);
   // Snapshotting stops the session; drop its lease dir as well.
   removeSessionLeases(session.id);
+  lifecycle.release();
 }
 
 // ---------------------------------------------------------------------------

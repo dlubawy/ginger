@@ -15,17 +15,33 @@
  *     file, read by ginger's buildSpec). Tools run in the spec's cwd
  *     (/workspace/<basename> by default, or the profile's `cwd`), matching
  *     what an attached ginger shell would see.
- *   - The session label carries pi=<pi session id> and name=pi:<id> --
- *     <workspace>, so on the next start of the same pi session the extension
- *     finds its snapshot and resumes it, and `ginger ls` shows an informative
- *     display name (as if `ginger snap -n` had been used). Sessions created
- *     by the `ginger` CLI (no pi= variable) are never touched.
+ *   - The session label carries pi=<root pi session id> and name=pi:<id> --
+ *     <workspace>, where the root is the top of this session's fork tree
+ *     (SessionHeader.parentSession links are paths; the extension walks them
+ *     to the root). All sessions in a tree share ONE VM: forking does not
+ *     snapshot or start a second VM — the child adopts the parent's running
+ *     VM as-is. (pi re-invokes this factory on every session replacement,
+ *     so the adopted-VM state lives at MODULE scope, not in the factory's
+ *     closure — see the state block below.) Only new roots get fresh VMs,
+ *     and only roots' snapshots are
+ *     created/resumed, so `ginger ls` shows an informative display name (as
+ *     if `ginger snap -n` had been used) and there is at most one snapshot
+ *     per session tree. Sessions created by the `ginger` CLI (no pi=
+ *     variable) are never touched.
  *   - On shutdown the VM is checkpointed into ginger's checkpoint directory
  *     with the same label, i.e. exactly what `ginger snap -n <name>` would
  *     produce — but only when the pi session records to a JSONL session file
- *     (in-memory sessions are closed without a snapshot). Any earlier
- *     snapshots of the same pi session are removed, so there is at most one
- *     per session id.
+ *     (in-memory sessions are closed without a snapshot). The checkpoint
+ *     runs under a ginger lifecycle marker (heartbeat-refreshed) so
+ *     concurrent `ginger` clients see "snap in progress" for the whole
+ *     duration — including the slow qcow rebase after the VM has already
+ *     closed and unregistered itself — and neither GC its session dir nor
+ *     start a conflicting snap/stop. On real exit (quit/reload) the
+ *     snapshot blocks until done and this session tree's earlier snapshots
+ *     are removed; on session replacement (/new, resume-switch) it runs in
+ *     the background so pi stays responsive — older snapshots are then
+ *     cleaned up by the next startVm, which must not unlink files a still-
+ *     running VM may use as its qcow2 backing file.
  *   - Owner-only access features from the spec (ingress via `listen`, ssh,
  *     and `direnv allow` in the guest) are applied after create AND resume,
  *     exactly as the ginger CLI's owner process does: ingress listeners are
@@ -216,6 +232,14 @@ interface GingerCheckpointsModule {
 interface GingerSessionsModule {
   writeSessionSpec(sessionId: string, spec: Record<string, any>): void;
   readSessionAccess(sessionId: string): Record<string, any> | null;
+  /**
+   * Claim the session for a long-running lifecycle op ("snap"/"stop") with
+   * heartbeat refresh; returns { release() }. Other ginger clients see the
+   * op via activeLifecycleOp() and leave the session alone.
+   */
+  startLifecycleOp?(sessionId: string, op: string): { release(): void };
+  /** "snap"/"stop" if another live client is mid-op on the session, else null. */
+  activeLifecycleOp?(sessionId: string): string | null;
 }
 
 interface GingerOwnerModule {
@@ -394,6 +418,63 @@ function resolveSnapshot(g: GingerModules, value: string): GingerCheckpointMeta 
   }
   const matches = g.checkpoints.matchCheckpoints([value]);
   return matches[0];
+}
+
+// ---------------------------------------------------------------------------
+// Pi session tree (fork lineage)
+// ---------------------------------------------------------------------------
+
+/** Read just the first JSON line (the header) of a pi session file. */
+function readSessionHeader(file: string): Record<string, any> | null {
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(65536);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      const firstLine = buf.subarray(0, n).toString("utf8").split("\n", 1)[0];
+      if (!firstLine) return null;
+      return JSON.parse(firstLine) as Record<string, any>;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Walk the fork lineage up to the root of this pi session's tree. Each
+ * SessionHeader.parentSession is a PATH to the parent session file; the root
+ * has none. All sessions in a tree share one VM (forks adopt their parent's
+ * running VM), so snapshots are keyed by the ROOT id: only new roots create
+ * fresh VMs, and only a root's snapshot is resumed for any member of the
+ * tree. Falls back to the session's own id when the chain can't be resolved
+ * (degrading to per-session behavior rather than failing to start).
+ */
+function findRootSessionId(ctx: ExtensionContext, fallbackId: string): string {
+  let header: Record<string, any> | null = null;
+  try {
+    const h = ctx.sessionManager.getHeader?.();
+    if (h && typeof h.id === "string") header = h as unknown as Record<string, any>;
+  } catch {
+    header = null;
+  }
+  if (!header) {
+    const file = ctx.sessionManager.getSessionFile?.();
+    if (typeof file === "string") header = readSessionHeader(file);
+  }
+  if (!header || typeof header.id !== "string") return fallbackId;
+  let id: string = header.id;
+  let parentPath = typeof header.parentSession === "string" ? header.parentSession : undefined;
+  const seen = new Set<string>();
+  while (parentPath && !seen.has(parentPath)) {
+    seen.add(parentPath);
+    const h = readSessionHeader(parentPath);
+    if (!h) break;
+    if (typeof h.id === "string") id = h.id;
+    parentPath = typeof h.parentSession === "string" ? h.parentSession : undefined;
+  }
+  return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -860,8 +941,48 @@ function createGondolinBashOps(
 }
 
 // ---------------------------------------------------------------------------
-// Extension
+// VM state — module scope, deliberately NOT factory scope
+//
+// pi re-invokes this extension's factory on every session replacement
+// (/new, /fork, resume-switch): each gets a fresh runtime and therefore a
+// fresh closure. The loaded module, however, is shared across those
+// invocations (pi caches the factory per cwd; only /reload re-imports it,
+// and reload stops the VM with a blocking snapshot first anyway). Keeping
+// the VM state here — instead of in the factory's closure — is what lets a
+// forked session ADOPT the parent's running VM: the outgoing instance's
+// session_shutdown("fork") leaves the state in place, and the incoming
+// instance's session_start("fork") finds it and attaches to the same VM.
+// One pi process runs one session at a time, so one module-level VM is
+// exactly the right shape.
 // ---------------------------------------------------------------------------
+
+let vm: GondolinVM | undefined;
+let vmStarting: Promise<GondolinVM> | undefined;
+let vmSpec: Record<string, any> | undefined;
+/** Ingress URL if the spec enabled `listen` (from the session access state). */
+let vmIngressUrl: string | undefined;
+/** Guest cwd for tools: the spec's cwd (refined by startVm once known). */
+let guestCwd = "";
+/**
+ * Frozen direnv environment (spec.direnv): captured once at VM start by
+ * evaluating the .envrc, injected into every tool exec. Refreshed by
+ * /reload-direnv. Undefined when direnv is off or capture failed.
+ */
+let direnvEnv: Record<string, string> | undefined;
+/**
+ * Login-shell environment captured once at VM start (profile, profile.d,
+ * nix-profile PATH, locale…). Layered under the direnv env and pi session
+ * vars in every tool exec, since commands run non-login (`bash -c`).
+ */
+let loginEnv: Record<string, string> | undefined;
+let vmPiId: string | undefined;
+let vmOrigin: "fresh" | "resumed" | "seeded" | undefined;
+let shuttingDown = false;
+// Bumped on every session transition (start, non-fork shutdown). A startVm
+// that began for an earlier session must not adopt its VM into a newer
+// one — it compares the generation it captured at entry.
+let generation = 0;
+let shellPath = "/bin/sh";
 
 export default function (pi: ExtensionAPI) {
   // Inside a ginger guest (e.g. `ginger --pi`) the tools should run locally —
@@ -881,29 +1002,9 @@ export default function (pi: ExtensionAPI) {
   // and the tools run in the spec's cwd, which defaults to that mount but a
   // project profile (.pi/ginger.json) can override with `cwd`.
   const guestWorkspace = path.posix.join(GUEST_WORKSPACE_ROOT, path.basename(localCwd));
-  let guestCwd = guestWorkspace;
-
-  let vm: GondolinVM | undefined;
-  let vmStarting: Promise<GondolinVM> | undefined;
-  let vmSpec: Record<string, any> | undefined;
-  /** Ingress URL if the spec enabled `listen` (from the session access state). */
-  let vmIngressUrl: string | undefined;
-  /**
-   * Frozen direnv environment (spec.direnv): captured once at VM start by
-   * evaluating the .envrc, injected into every tool exec. Refreshed by
-   * /reload-direnv. Undefined when direnv is off or capture failed.
-   */
-  let direnvEnv: Record<string, string> | undefined;
-  /**
-   * Login-shell environment captured once at VM start (profile, profile.d,
-   * nix-profile PATH, locale…). Layered under the direnv env and pi session
-   * vars in every tool exec, since commands run non-login (`bash -c`).
-   */
-  let loginEnv: Record<string, string> | undefined;
-  let vmPiId: string | undefined;
-  let vmOrigin: "fresh" | "resumed" | "seeded" | undefined;
-  let shuttingDown = false;
-  let shellPath = "/bin/sh";
+  // Module-scope VM state (see above): reset the cwd default for this
+  // instance; startVm refines it from the spec once one is running.
+  guestCwd = guestWorkspace;
 
   const guestPaths = (): GuestPaths => ({
     localCwd,
@@ -923,14 +1024,26 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function startVm(ctx?: ExtensionContext): Promise<GondolinVM> {
-    ctx?.ui.setStatus("ginger", ctx.ui.theme.fg("accent", `Ginger: starting VM for ${localCwd}`));
+    const myGeneration = generation;
+    // Capture everything we need from ctx NOW, while it is active: pi
+    // invalidates a session's ctx when the session is replaced (every
+    // property access on it then THROWS), and this function outlives such
+    // replacements — VM boot + direnv evaluation can take minutes. The ui
+    // object itself is app-level (the TUI) and stays valid for the process;
+    // the session identity must be read before the first await.
+    const ui = ctx?.ui;
+    if (ui) ui.setStatus("ginger", ui.theme.fg("accent", `Ginger: starting VM for ${localCwd}`));
+    // Key snapshots by the ROOT of this session's fork tree (see
+    // findRootSessionId): every member of the tree shares one VM, so they
+    // share one snapshot chain too.
+    const piId = ctx
+      ? findRootSessionId(ctx, String(ctx.sessionManager.getSessionId()))
+      : `pid-${process.pid}`;
     const g = await loadGinger();
     if (!g)
       throw new Error(
         "ginger not found (no `ginger` on PATH and no GINGER_SRC set) — cannot start the VM; tools will fail until ginger is installed",
       );
-
-    const piId = ctx ? String(ctx.sessionManager.getSessionId()) : `pid-${process.pid}`;
     const wsPath = localCwd;
     // Display name for this session's snapshots (label name=), shown by
     // `ginger ls` and used for matching — as if `ginger snap -n <name>` had
@@ -982,6 +1095,21 @@ export default function (pi: ExtensionAPI) {
           pi: piId,
         });
         origin = "resumed";
+        if (mine.length > 1) {
+          // One snapshot per session tree: the older ones are redundant now.
+          // Drop them BEFORE booting — once the new VM is up, an older file
+          // could in principle still be another running VM's qcow2 backing
+          // file (a concurrent pi process resuming it), and unlinking that
+          // mid-flight would corrupt it. Background snapshots deliberately
+          // never delete; this pre-boot pass is the tree's cleanup point.
+          await gingerCall(() => g.checkpoints.removeCheckpoints(mine.slice(1))).catch(
+            (err) =>
+              ui?.notify(
+                `Ginger: could not remove old snapshots: ${err instanceof Error ? err.message : String(err)}`,
+                "error",
+              ),
+          );
+        }
       } else {
         spec = await gingerCall(() =>
           g.spec.buildSpec({ workspace: wsPath, piSession: piId, name: snapName }),
@@ -995,10 +1123,11 @@ export default function (pi: ExtensionAPI) {
       ? await g.sdk.VmCheckpoint.load(spec.checkpoint).resume(options)
       : await g.sdk.VM.create(options);
 
-    // A shutdown may have raced with the (slow) VM creation — don't leak it.
-    if (shuttingDown) {
+    // A session transition may have raced with the (slow) VM creation —
+    // don't leak this session's VM into the next one.
+    if (shuttingDown || generation !== myGeneration) {
       await created.close().catch(() => {});
-      throw new Error("pi is shutting down");
+      throw new Error("pi session changed while the VM was starting");
     }
 
     // Apply the owner-only access features (ingress, ssh) and guest setup
@@ -1009,11 +1138,11 @@ export default function (pi: ExtensionAPI) {
     // Best effort: a failing feature is reported but doesn't sink the VM.
     await gingerCall(() =>
       g.owner.applyOwnerFeatures(created, spec, {
-        log: (msg) => ctx?.ui.notify(`Ginger: ${msg}`, "info"),
-        error: (msg) => ctx?.ui.notify(`Ginger: ${msg}`, "error"),
+        log: (msg) => ui?.notify(`Ginger: ${msg}`, "info"),
+        error: (msg) => ui?.notify(`Ginger: ${msg}`, "error"),
       }),
     ).catch((err) => {
-      ctx?.ui.notify(
+      ui?.notify(
         `Ginger: access feature setup failed: ${err instanceof Error ? err.message : String(err)}`,
         "error",
       );
@@ -1041,7 +1170,7 @@ export default function (pi: ExtensionAPI) {
     try {
       await gingerCall(() => g.sessions.writeSessionSpec(created.id, spec));
     } catch (err) {
-      ctx?.ui.notify(
+      ui?.notify(
         `Ginger: could not register session spec: ${err instanceof Error ? err.message : String(err)}`,
         "error",
       );
@@ -1059,7 +1188,7 @@ export default function (pi: ExtensionAPI) {
       await created.exec(["mkdir", "-p", path.posix.dirname(HOST_PI_AGENT_DIR)]);
       await created.exec(["ln", "-sfn", GUEST_PI_AGENT_DIR, HOST_PI_AGENT_DIR]);
     } catch (err) {
-      ctx?.ui.notify(
+      ui?.notify(
         `Ginger: could not alias ${HOST_PI_AGENT_DIR} in the guest: ${err instanceof Error ? err.message : String(err)}`,
         "error",
       );
@@ -1074,7 +1203,7 @@ export default function (pi: ExtensionAPI) {
       loginEnv = await gingerCall(() => captureLoginEnv(created, shellPath));
     } catch (err) {
       loginEnv = undefined;
-      ctx?.ui.notify(
+      ui?.notify(
         `Ginger: login env capture failed: ${err instanceof Error ? err.message : String(err)}`,
         "error",
       );
@@ -1091,14 +1220,14 @@ export default function (pi: ExtensionAPI) {
       // line that ticks with elapsed seconds, so pi doesn't look stalled.
       const evalStartedAt = Date.now();
       const showEvalStatus = () => {
-        if (!ctx) return;
+        if (!ui) return;
         const secs = Math.round((Date.now() - evalStartedAt) / 1000);
-        ctx.ui.setStatus(
+        ui.setStatus(
           "ginger",
-          ctx.ui.theme.fg("muted", `Ginger: evaluating .envrc (direnv/nix)… ${secs}s`),
+          ui.theme.fg("muted", `Ginger: evaluating .envrc (direnv/nix)… ${secs}s`),
         );
       };
-      ctx?.ui.notify(
+      ui?.notify(
         "Ginger: evaluating direnv environment (.envrc) — nix devshells can take a while",
         "info",
       );
@@ -1106,13 +1235,13 @@ export default function (pi: ExtensionAPI) {
       const evalTick = setInterval(showEvalStatus, 1000);
       try {
         direnvEnv = await gingerCall(() => captureDirenvEnv(created, guestCwd));
-        ctx?.ui.notify(
+        ui?.notify(
           `Ginger: direnv environment loaded (${Object.keys(direnvEnv).length} vars) after ${Math.round((Date.now() - evalStartedAt) / 1000)}s; /reload-direnv to re-evaluate`,
           "info",
         );
       } catch (err) {
         direnvEnv = undefined;
-        ctx?.ui.notify(
+        ui?.notify(
           `Ginger: direnv env capture failed: ${err instanceof Error ? err.message : String(err)}`,
           "error",
         );
@@ -1121,11 +1250,13 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    ctx?.ui.setStatus("ginger", ctx.ui.theme.fg("accent", vmStatusLabel(created.id)));
-    ctx?.ui.notify(
-      `Ginger VM ${origin === "fresh" ? "started" : origin === "resumed" ? "resumed from snapshot" : "started from GINGER_PI_SNAPSHOT"}. ${localCwd} is mounted at ${guestWorkspace}; tools run in ${guestCwd}.${vmIngressUrl ? ` Ingress: ${vmIngressUrl}` : ""}`,
-      "info",
-    );
+    if (ui) {
+      ui.setStatus("ginger", ui.theme.fg("accent", vmStatusLabel(created.id)));
+      ui.notify(
+        `Ginger VM ${origin === "fresh" ? "started" : origin === "resumed" ? "resumed from snapshot" : "started from GINGER_PI_SNAPSHOT"}. ${localCwd} is mounted at ${guestWorkspace}; tools run in ${guestCwd}.${vmIngressUrl ? ` Ingress: ${vmIngressUrl}` : ""}`,
+        "info",
+      );
+    }
     return created;
   }
 
@@ -1139,22 +1270,197 @@ export default function (pi: ExtensionAPI) {
     return vmStarting;
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  /**
+   * Checkpoint the VM into ginger's checkpoint directory (the same layout as
+   * `ginger snap`: qcow2 + 0600 JSON sidecar). Runs under a heartbeat
+   * lifecycle marker so concurrent ginger clients see "snap in progress" for
+   * the whole duration — including the slow qcow rebase+move, by which time
+   * the VM is already closed and unregistered from every registry. With
+   * blocking=true the caller awaits this (real exit: pi stops right after);
+   * otherwise it runs fire-and-forget and reports via notifications only.
+   */
+  async function snapshotVm(opts: {
+    // The CAPTURED ui object (ctx.ui read while the ctx was still active),
+    // never the ctx itself: in background mode this runs long after pi has
+    // replaced the session, and every property access on a stale ctx throws.
+    ui: ExtensionContext["ui"];
+    vm: GondolinVM;
+    spec: Record<string, any>;
+    piId: string | undefined;
+    blocking: boolean;
+  }): Promise<void> {
+    const { ui, vm: activeVm, spec: activeSpec, piId: activePiId, blocking } = opts;
+    const g = await loadGinger();
+    if (!g || !activeSpec) {
+      try {
+        await activeVm.close();
+      } catch {
+        // best effort
+      }
+      if (blocking) ui.setStatus("ginger", undefined);
+      return;
+    }
+    // Another ginger client (CLI snap/stop) may already own this session —
+    // don't double-checkpoint a VM it is about to stop.
+    try {
+      const busy = await gingerCall(() => g.sessions.activeLifecycleOp?.(activeVm.id) ?? null);
+      if (busy) {
+        ui.notify(
+          `Ginger: session ${activeVm.id.slice(0, 8)} is already being ${busy} by another client — skipping snapshot`,
+          "info",
+        );
+        try {
+          await activeVm.close();
+        } catch {
+          // best effort
+        }
+        if (blocking) ui.setStatus("ginger", undefined);
+        return;
+      }
+    } catch {
+      // marker check is best effort — proceed
+    }
+    const startedAt = Date.now();
+    if (blocking)
+      ui.setStatus("ginger", ui.theme.fg("muted", "Ginger: snapshotting"));
+    try {
+      // Claim the session BEFORE touching the VM. During the slow rebase the
+      // VM is already gone from every registry, so without this marker a
+      // concurrent `ginger ls` would GC the session's sidecar dir (spec.json
+      // & co.) mid-snapshot, and a CLI snap/stop could race us on the same
+      // VM. The heartbeat keeps the marker fresh for minutes-long snapshots.
+      const lifecycle = g.sessions.startLifecycleOp
+        ? await gingerCall(() => g.sessions.startLifecycleOp!(activeVm.id, "snap"))
+        : { release() {} };
+      try {
+        const version = g.envInfo?.version ?? process.env.GINGER_VERSION ?? "dev";
+        const name = `ginger-${String(version).replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}`;
+        const dir = checkpointDir();
+        fs.mkdirSync(dir, { recursive: true });
+        const outPath = path.join(dir, `${name}.qcow2`);
+        await activeVm.checkpoint(outPath);
+        // The qcow must be on disk before its sidecar is written — the
+        // reverse order (or a crash between the two) leaves an orphan that
+        // `ginger ls` can neither show nor resume.
+        if (!fs.existsSync(outPath))
+          throw new Error(`checkpoint file missing after checkpoint(): ${outPath}`);
+        g.checkpoints.writeCheckpointMeta({
+          name,
+          path: outPath,
+          label: activeSpec.label,
+          spec: activeSpec,
+          createdAt: new Date().toISOString(),
+        });
+        if (activePiId && blocking) {
+          // One snapshot per session tree, deleted only when we are the last
+          // word: on real exit no VM of this process is left that could be
+          // using an older file as its qcow2 backing. Background mode leaves
+          // cleanup to the next startVm (which deletes pre-boot).
+          const stale = await gingerCall(() =>
+            g.checkpoints
+              .listCheckpoints()
+              .filter(
+                (m) => g.spec.parseLabel(m.label ?? "").pi === activePiId && m.path !== outPath,
+              ),
+          );
+          if (stale.length > 0) await gingerCall(() => g.checkpoints.removeCheckpoints(stale));
+        }
+        const secs = Math.round((Date.now() - startedAt) / 1000);
+        ui.notify(`Ginger VM snapshot saved: ${outPath} (${secs}s)`, "info");
+      } finally {
+        lifecycle.release();
+      }
+    } catch (err) {
+      ui.notify(
+        `Ginger snapshot failed: ${err instanceof Error ? err.message : String(err)}`,
+        "error",
+      );
+    } finally {
+      try {
+        await activeVm.close();
+      } catch {
+        // best effort — the VM is already stopped after a checkpoint
+      }
+      if (blocking) ui.setStatus("ginger", undefined);
+    }
+  }
+
+  pi.on("session_start", async (event, ctx) => {
+    // Capture ui while the ctx is active — this handler (and the VM boot it
+    // triggers) can outlive a session replacement, after which every ctx
+    // property access throws.
+    const ui = ctx.ui;
+    generation++;
+    // A previous shutdown may have left the flag set — a fresh session must
+    // be able to start its VM.
+    shuttingDown = false;
+    // A fork continues the parent session's work: adopt the running VM
+    // instead of snapshotting + starting a second one. The state is in
+    // module scope (see above) and the parent's shutdown handler (reason
+    // "fork") deliberately left it in place for us.
+    if (event.reason === "fork" && vm) {
+      // Verify the VM is still alive before adopting — if it died in the
+      // replacement gap, drop the stale state and start normally below
+      // (resume from the tree's snapshot or fresh). Unknown (no ginger,
+      // lookup error, entry already GC'd) → assume alive; a truly dead VM
+      // fails loudly on the first exec.
+      let alive = true;
+      try {
+        const g = await loadGinger();
+        if (g) {
+          const s = await g.sdk.findSession(vm.id);
+          alive = s?.alive !== false;
+        }
+      } catch {
+        alive = true;
+      }
+      if (alive) {
+        // This factory invocation reset guestCwd to the default mount; the
+        // adopted VM's spec is the source of truth (profiles can override
+        // cwd).
+        guestCwd = typeof vmSpec?.cwd === "string" && vmSpec.cwd ? vmSpec.cwd : guestWorkspace;
+        ui.setStatus("ginger", ui.theme.fg("accent", vmStatusLabel(vm.id)));
+        ui.notify(
+          `Ginger VM inherited from parent session: ${vm.id} (${guestCwd})`,
+          "info",
+        );
+        return;
+      }
+      vm = undefined;
+      vmSpec = undefined;
+      vmPiId = undefined;
+      vmOrigin = undefined;
+      vmIngressUrl = undefined;
+      direnvEnv = undefined;
+      loginEnv = undefined;
+    }
     try {
       await ensureVm(ctx);
     } catch (err) {
-      ctx.ui.notify(
+      ui.notify(
         `Ginger VM failed to start: ${err instanceof Error ? err.message : String(err)}`,
         "error",
       );
     }
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
-    shuttingDown = true;
+  pi.on("session_shutdown", async (event, ctx) => {
+    // Capture ui NOW: for /new and resume-switches the background snapshot
+    // keeps running long after pi has replaced this session, and a stale
+    // ctx throws on every property access.
+    const ui = ctx.ui;
+    const reason = event.reason;
     const activeVm = vm;
     const activeSpec = vmSpec;
     const activePiId = vmPiId;
+    if (!activeVm) return;
+
+    // Fork: hand the VM to the child session — no snapshot, no new VM. The
+    // tree keeps sharing this one VM; the root's next shutdown covers it.
+    if (reason === "fork") return;
+
+    generation++;
+    shuttingDown = true;
     vm = undefined;
     vmSpec = undefined;
     vmPiId = undefined;
@@ -1162,7 +1468,7 @@ export default function (pi: ExtensionAPI) {
     vmStarting = undefined;
     direnvEnv = undefined;
     loginEnv = undefined;
-    if (!activeVm) return;
+
     // Only snapshot sessions that have an actual JSONL transcript on disk.
     // pi reports the session file path even before it is ever written
     // (sessions without chat history never create the file), so the path
@@ -1179,64 +1485,36 @@ export default function (pi: ExtensionAPI) {
       } catch {
         // best effort
       }
-      ctx.ui.setStatus("ginger", undefined);
+      ui.setStatus("ginger", undefined);
       return;
     }
-    ctx.ui.setStatus("ginger", ctx.ui.theme.fg("muted", "Ginger: snapshotting"));
-    const g = await loadGinger();
-    try {
-      if (g && activeSpec) {
-        // Same layout as `ginger snap`: qcow2 + 0600 JSON sidecar in the
-        // checkpoint dir, label keeps pi=<id> so the next start of this pi
-        // session resumes it.
-        const version = g.envInfo?.version ?? process.env.GINGER_VERSION ?? "dev";
-        const name = `ginger-${String(version).replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}`;
-        const dir = checkpointDir();
-        fs.mkdirSync(dir, { recursive: true });
-        const outPath = path.join(dir, `${name}.qcow2`);
-        await activeVm.checkpoint(outPath);
-        g.checkpoints.writeCheckpointMeta({
-          name,
-          path: outPath,
-          label: activeSpec.label,
-          spec: activeSpec,
-          createdAt: new Date().toISOString(),
-        });
-        // One snapshot per pi session: drop this session's earlier
-        // snapshots (the label's pi= links them) now that the new one is on
-        // disk.
-        if (activePiId) {
-          const stale = await gingerCall(() =>
-            g.checkpoints
-              .listCheckpoints()
-              .filter(
-                (m) => g.spec.parseLabel(m.label ?? "").pi === activePiId && m.path !== outPath,
-              ),
+
+    // Real exit (quit/reload, or an older pi without a reason): pi stops
+    // running right after this handler, so the snapshot must complete here.
+    // Session replacement (/new, resume-switch): pi keeps running, so run
+    // the (potentially minutes-long) checkpoint in the background and let
+    // the user keep working in the new session.
+    if (reason === "new" || reason === "resume") {
+      ui.notify("Ginger: snapshotting in the background — you can keep working", "info");
+      void snapshotVm({ ui, vm: activeVm, spec: activeSpec, piId: activePiId, blocking: false }).catch(
+        (err) => {
+          ui.notify(
+            `Ginger background snapshot failed: ${err instanceof Error ? err.message : String(err)}`,
+            "error",
           );
-          if (stale.length > 0) await gingerCall(() => g.checkpoints.removeCheckpoints(stale));
-        }
-        ctx.ui.notify(`Ginger VM snapshot saved: ${outPath}`, "info");
-      }
-    } catch (err) {
-      ctx.ui.notify(
-        `Ginger snapshot failed: ${err instanceof Error ? err.message : String(err)}`,
-        "error",
+        },
       );
-    } finally {
-      try {
-        await activeVm.close();
-      } catch {
-        // best effort — the VM is already stopped after a checkpoint
-      }
-      ctx.ui.setStatus("ginger", undefined);
+    } else {
+      await snapshotVm({ ui, vm: activeVm, spec: activeSpec, piId: activePiId, blocking: true });
     }
   });
 
   pi.registerCommand("ginger", {
     description: "Show Ginger VM status",
     handler: async (_args, ctx) => {
+      const ui = ctx.ui; // capture while active (ensureVm can take minutes)
       const activeVm = await ensureVm(ctx);
-      ctx.ui.notify(
+      ui.notify(
         [
           `Ginger session: ${activeVm.id}`,
           `Label: ${vmSpec?.label ?? "(unknown)"}`,
@@ -1260,12 +1538,14 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+
   pi.registerCommand("reload-direnv", {
     description:
       "Re-evaluate the guest .envrc (direnv) and refresh the environment used by tool commands",
     handler: async (_args, ctx) => {
+      const ui = ctx.ui; // capture while active (re-evaluation can take minutes)
       if (!vmSpec?.direnv) {
-        ctx.ui.notify(
+        ui.notify(
           'Ginger: direnv is not enabled for this VM (set "direnv": true in .pi/ginger.json)',
           "error",
         );
@@ -1274,24 +1554,24 @@ export default function (pi: ExtensionAPI) {
       const activeVm = await ensureVm(ctx);
       // Re-evaluation can take minutes (nix devshell) — show it in the
       // status line so pi doesn't look stalled.
-      ctx.ui.setStatus(
+      ui.setStatus(
         "ginger",
-        ctx.ui.theme.fg("muted", "Ginger: re-evaluating .envrc (direnv/nix)…"),
+        ui.theme.fg("muted", "Ginger: re-evaluating .envrc (direnv/nix)…"),
       );
       try {
         const env = await gingerCall(() => captureDirenvEnv(activeVm, guestCwd));
         direnvEnv = env;
-        ctx.ui.notify(
+        ui.notify(
           `Ginger: direnv environment reloaded (${Object.keys(env).length} vars)`,
           "info",
         );
       } catch (err) {
-        ctx.ui.notify(
+        ui.notify(
           `Ginger: direnv reload failed: ${err instanceof Error ? err.message : String(err)}`,
           "error",
         );
       } finally {
-        ctx.ui.setStatus("ginger", ctx.ui.theme.fg("accent", vmStatusLabel(activeVm.id)));
+        ui.setStatus("ginger", ui.theme.fg("accent", vmStatusLabel(activeVm.id)));
       }
     },
   });

@@ -186,14 +186,17 @@ export function removeSessionLeases(sessionId) {
 // Lifecycle markers — let other clients see an in-flight --snap/--stop
 // ---------------------------------------------------------------------------
 
-const LIFECYCLE_STALE_MS = 30 * 60_000;
+// The marker is rewritten (heartbeat) while the op runs; freshness is judged
+// by file mtime so a long snapshot stays visible for its whole duration and
+// a dead owner's marker expires within one stale window.
+const LIFECYCLE_REFRESH_MS = 5_000;
+const LIFECYCLE_STALE_MS = 60_000;
 
 function lifecyclePath(sessionId) {
   return path.join(cacheDir, "sessions", sessionId, "lifecycle");
 }
 
-/** Mark this client as running a lifecycle op ("snap"/"stop") on the session. */
-export function setLifecycleOp(sessionId, op) {
+function writeLifecycleMarker(sessionId, op) {
   try {
     fs.mkdirSync(path.dirname(lifecyclePath(sessionId)), { recursive: true });
     fs.writeFileSync(
@@ -205,16 +208,49 @@ export function setLifecycleOp(sessionId, op) {
   }
 }
 
+/** Mark this client as running a one-shot lifecycle op (no heartbeat). */
+export function setLifecycleOp(sessionId, op) {
+  writeLifecycleMarker(sessionId, op);
+}
+
+/**
+ * Like setLifecycleOp but for long-running ops: the marker is refreshed every
+ * few seconds until release() (or process exit), so other clients see the op
+ * for its entire duration. Returns { release() }.
+ */
+export function startLifecycleOp(sessionId, op) {
+  const marker = { released: false };
+  marker.release = () => {
+    if (marker.released) return;
+    marker.released = true;
+    if (marker.timer) clearInterval(marker.timer);
+    try {
+      fs.rmSync(lifecyclePath(sessionId), { force: true });
+    } catch {
+      // already gone — fine
+    }
+  };
+  writeLifecycleMarker(sessionId, op);
+  marker.timer = setInterval(() => writeLifecycleMarker(sessionId, op), LIFECYCLE_REFRESH_MS);
+  marker.timer.unref();
+  // ginger exits via process.exit(), which skips finally blocks — the 'exit'
+  // event is the reliable hook (see ClientLease.acquire for the rationale).
+  process.once("exit", marker.release);
+  return marker;
+}
+
 /**
  * Return "snap"/"stop" if another live client is mid-lifecycle-op on the
- * session, else null (missing, dead pid, or stale marker).
+ * session, else null (missing, dead pid, or stale marker). Freshness uses the
+ * marker's mtime (heartbeat), not its original timestamp.
  */
 export function activeLifecycleOp(sessionId) {
   try {
-    const { op, pid, at } = JSON.parse(fs.readFileSync(lifecyclePath(sessionId), "utf8"));
+    const p = lifecyclePath(sessionId);
+    const { op, pid } = JSON.parse(fs.readFileSync(p, "utf8"));
     if (typeof op !== "string") return null;
     if (!Number.isInteger(pid) || pid === process.pid || !isAlive(pid)) return null;
-    if (Date.now() - new Date(at).getTime() > LIFECYCLE_STALE_MS) return null;
+    if (Date.now() - fs.statSync(p).mtimeMs > LIFECYCLE_STALE_MS) return null;
     return op;
   } catch {
     return null;

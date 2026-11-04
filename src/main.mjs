@@ -41,7 +41,12 @@ import {
   matchSession,
   readSessionSpec,
 } from "./sessions.mjs";
-import { listCheckpoints, matchCheckpoints, removeCheckpoints } from "./checkpoints.mjs";
+import {
+  listCheckpoints,
+  matchCheckpoints,
+  orphanedCheckpoints,
+  removeCheckpoints,
+} from "./checkpoints.mjs";
 import { pickTarget, targetTitle } from "./picker.mjs";
 import { buildSpec, formatLabel, mergeEnv, parseLabel, setLabelName } from "./spec.mjs";
 import {
@@ -450,6 +455,20 @@ async function commandList(opts) {
         path.basename(m.path),
       ]),
     );
+
+  // Disk images whose metadata sidecar was never written (the snapshotting
+  // process died mid-snapshot). Unusable — no label or spec — but visible so
+  // the user can delete them with rm instead of wondering where they went.
+  // Orphans carry no metadata, so they can't be filtered by workspace —
+  // always report them.
+  const orphans = orphanedCheckpoints();
+  if (orphans.length > 0) {
+    console.log(`\nOrphaned snapshot images (${orphans.length}):`);
+    for (const p of orphans)
+      console.log(
+        `  ${path.basename(p)}  ${formatSize(fs.statSync(p, { throwIfNoEntry: false })?.size)}  (no metadata — delete with rm if not needed)`,
+      );
+  }
 }
 
 async function commandRemove(opts) {

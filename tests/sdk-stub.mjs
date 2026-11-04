@@ -12,6 +12,7 @@
 // (a test hook) so tests can assert what skill/config paths actually
 // resolve to.
 
+import fsSync from "node:fs";
 import { promises as fsp } from "node:fs";
 import pathMod from "node:path";
 
@@ -20,6 +21,12 @@ export const vms = [];
 export let dumpCount = 0;
 /** Directory standing in for the guest's /etc/pi/agent (image-baked copy). */
 export const guestPi = { dir: null };
+/**
+ * Test hooks. checkpointHook(p, vm) is awaited DURING vm.checkpoint() —
+ * before the qcow file appears — so tests can hold a snapshot in flight and
+ * observe the window (lifecycle marker present, no qcow yet).
+ */
+export const control = { checkpointHook: null };
 
 function makeFs() {
   const enoent = (p) => {
@@ -129,6 +136,10 @@ function makeVm(options, resumed = false) {
     },
     async checkpoint(p) {
       checkpointCalls.push(p);
+      if (control.checkpointHook) await control.checkpointHook(p, this);
+      // The real checkpoint leaves the qcow on disk when it resolves.
+      fsSync.mkdirSync(pathMod.dirname(p), { recursive: true });
+      fsSync.writeFileSync(p, "stub-qcow");
     },
     async close() {
       this.closed = true;
@@ -159,11 +170,16 @@ export function createShadowPathPredicate(paths) {
 export function makePlaceholderFunc({ length }) {
   return () => "x".repeat(length);
 }
+// Session registry: mirrors the real SDK — one entry per created/resumed VM,
+// alive while it is not closed, addressable by exact or prefix id.
 export async function listSessions() {
-  return [];
+  return vms
+    .filter((v) => !v.closed)
+    .map((v) => ({ id: v.id, pid: process.pid, socketPath: `/tmp/${v.id}.sock`, alive: true }));
 }
-export async function findSession() {
-  return null;
+export async function findSession(query) {
+  const all = await listSessions();
+  return all.find((s) => s.id === query || s.id.startsWith(query)) ?? null;
 }
 export function connectToSession() {
   throw new Error("not supported in stub");
