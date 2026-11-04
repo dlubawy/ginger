@@ -13,14 +13,24 @@ any nix build sandbox.
 Covers: spec → `VM.create` options; owner features (ingress for `listen`,
 `direnv allow`); ingress URL surfacing (access.json, notification, system
 prompt, `/ginger` status); login-env + direnv env capture-once semantics and
-per-exec injection; non-login bash argv; `/reload-direnv`; snapshotting only
+per-exec injection; non-login bash argv; snapshotting only
 when the session JSONL exists on disk; fork inheritance across extension
 instances (pi re-invokes the factory per session, so forks adopt the
 parent's running VM via module-scope state; labels/snapshots keyed by the
 tree's root id via the `parentSession` chain); background snapshots on `/new` (the shutdown handler
 returns while the qcow is in flight, under a heartbeat lifecycle marker that
-keeps `ginger ls`'s session-dir GC away mid-snapshot); pre-boot cleanup of a
-tree's older snapshots; and the lifecycle-marker protocol itself (visible to
+keeps `ginger ls`'s session-dir GC away mid-snapshot); cross-tree
+`/resume` from a session running on its tree's snapshot leaving exactly ONE
+snapshot for that tree (the old backing file is removed once the new one
+lands — the duplication regression); an older snapshot referenced by another
+LIVE ginger session as its qcow2 backing surviving that cleanup; labels
+carrying no redundant `name=` (the display title is derived from `pi=` +
+`ws=` via `derivedPiName`); same-tree `/resume` keeping the running VM as-is;
+`/new` during an in-flight boot aborting that boot (generation guard); the
+workspace following pi's per-session cwd — fresh boots mount `ctx.cwd`
+rather than `process.cwd()`, tool calls carrying host paths under it
+translate into the guest, and a snapshot resume keeps the workspace recorded
+in the snapshot's spec; and the lifecycle-marker protocol itself (visible to
 other pids, ignored for its own pid, expires when unrefreshed).
 
 ```sh

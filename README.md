@@ -93,10 +93,20 @@ Inside `pi`, the ginger extension:
   environment, and pi's session variables. **The host environment is never
   forwarded**; no host secrets, no `HOME=/Users/...`, nothing.
 - evaluates the `.envrc` once at start (with a live status line while nix
-  chews), then re-evaluates only when you ask: `/reload-direnv`.
-- takes one snapshot per pi session on shutdown — and only when the session
-  actually has a transcript on disk. Restarting with the same session resumes
-  the exact VM, features (ingress, direnv) included.
+  chews); it is re-evaluated on the next VM start — e.g. `/reload`, which
+  snapshots and restarts the VM.
+- mounts pi's **per-session** working directory (`ctx.cwd`, restored from
+  the session file on resume) at `/workspace/<basename>`, not wherever pi
+  happened to be launched — so resuming a session recorded in another
+  checkout mounts that checkout, and host paths under it in tool calls
+  translate into the guest. A snapshot's recorded workspace wins over the
+  current cwd on resume.
+- maps VMs to pi session **trees**, not individual sessions: forking and
+  resuming within a tree keep the one running VM; only a new root — or a
+  resume into a different tree — snapshots the old VM and starts the new
+  tree's own (resuming its snapshot when one exists, so the guest workspace
+  matches the resumed transcript). Snapshots happen on shutdown and only
+  when the session actually has a transcript on disk.
 - reports state on demand: `/ginger` shows origin, cwd, ingress URL, and env
   capture status.
 - resolves pi config paths across the host/guest split. pi runs on the host,
@@ -152,13 +162,21 @@ trufflehog, commitizen, …) via `prek`.
 - **The agent owns its environment.** Everything the tools see is declared:
   image defaults + spec env + direnv + pi session vars. Anything not
   declared is absent — that's a feature, not a gap.
-- **Evaluate once, refresh on demand.** A nix devshell `.envrc` can take
+- **Evaluate once, refresh on restart.** A nix devshell `.envrc` can take
   minutes; ginger evaluates it at VM start (with visible progress) and never
-  again unless the user runs `/reload-direnv`. Per-command evaluation was
+  again until the next VM start (e.g. `/reload`). Per-command evaluation was
   tried and rejected.
-- **Snapshots are per-session artifacts.** One pi session → one snapshot,
-  named from the session (`pi:<id>`), superseded on the next shutdown.
-  Sessions with no transcript produce none.
+- **Snapshots are per-tree artifacts.** One pi session tree → one snapshot
+  chain, keyed by the tree's root (`pi=<id>` in the label); `ginger ls`
+  derives the display title from the label's own `pi=` + `ws=` parts
+  (`pi:root:<id> -- <workspace>`) instead of storing a redundant `name=`.
+  Every member of a tree (forks, resumed ancestors) shares the running VM
+  and the chain; sessions with no transcript produce none. The chain is
+  trimmed to one snapshot whenever a new one lands — including background
+  snapshots on session replacement — except files another live ginger
+  session references as its qcow2 backing (unlinking those would corrupt the
+  VM running on them); leftovers are retried pre-boot on the tree's next
+  start.
 - **Best-effort features, loud failures.** A failing owner feature (ingress,
   SSH, direnv) records an error in the session's `access.json` and notifies —
   it never sinks the VM.

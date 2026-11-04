@@ -98,6 +98,19 @@ export function setLabelName(label, name) {
   return makeLabel({ ws: cur.ws, name, pi: cur.pi });
 }
 
+/**
+ * Derived display name for pi-owned targets without an explicit name=:
+ * rebuilds the title the pi extension used to record — `pi:root:<id> --
+ * <workspace basename>` — from the label's pi= and ws= parts, so `ginger ls`
+ * keeps showing a recognizable name without the label duplicating its own
+ * query parameters. Null when the label has no pi=.
+ */
+export function derivedPiName(label) {
+  const { ws, pi } = parseLabel(label);
+  if (!pi) return null;
+  return ws ? `pi:root:${pi} -- ${path.basename(ws)}` : `pi:root:${pi}`;
+}
+
 /** Human-readable form for display (decoded values, no percent-encoding). */
 export function formatLabel(label) {
   const s = String(label ?? "");

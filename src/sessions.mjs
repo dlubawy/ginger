@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { LABEL_PREFIX, cacheDir, fail, sdk } from "./config.mjs";
-import { parseLabel } from "./spec.mjs";
+import { derivedPiName, parseLabel } from "./spec.mjs";
 import { isAlive } from "./ui.mjs";
 
 const LEASE_HEARTBEAT_MS = 5_000;
@@ -269,13 +269,14 @@ export async function gingerSessions() {
 }
 
 /**
- * Match a session query: exact id, custom name (label name=) or workspace
- * path (label ws=) first, then a unique prefix of any of those.
+ * Match a session query: exact id, custom name (label name=), derived pi
+ * title, or workspace path (label ws=) first, then a unique prefix of any
+ * of those.
  */
 export function matchSession(sessions, query) {
   const keys = (s) => {
     const { ws, name } = parseLabel(s.label);
-    return [s.id, name, ws, ws ? path.basename(ws) : null];
+    return [s.id, name, derivedPiName(s.label), ws, ws ? path.basename(ws) : null];
   };
   const exact = sessions.filter((s) => keys(s).some((k) => k === query));
   if (exact.length > 0) {

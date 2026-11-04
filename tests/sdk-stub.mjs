@@ -25,8 +25,17 @@ export const guestPi = { dir: null };
  * Test hooks. checkpointHook(p, vm) is awaited DURING vm.checkpoint() —
  * before the qcow file appears — so tests can hold a snapshot in flight and
  * observe the window (lifecycle marker present, no qcow yet).
+ * createHook(vm) is awaited DURING VM.create — before the vm is registered
+ * — so tests can hold a boot in flight.
  */
-export const control = { checkpointHook: null };
+export const control = { checkpointHook: null, createHook: null };
+/**
+ * Host dir standing in for the guest's /workspace/<basename> mount (the
+ * workspace hostfs provider). When set, vm.fs serves /workspace/<basename>/…
+ * from it — enough for tests to assert host→guest path translation end to
+ * end through a real pi tool.
+ */
+control.workspaceHost = null;
 
 function makeFs() {
   const enoent = (p) => {
@@ -39,6 +48,17 @@ function makeFs() {
       const rel = p.slice("/etc/pi/agent".length).replace(/^\//, "");
       if (!rel) throw enoent(p);
       return fsp.readFile(pathMod.join(guestPi.dir, rel), "utf8");
+    }
+    if (control.workspaceHost) {
+      const mount = `/workspace/${pathMod.basename(control.workspaceHost)}`;
+      if (p === mount || p.startsWith(mount + "/")) {
+        const rel = p.slice(mount.length).replace(/^\//, "");
+        try {
+          return await fsp.readFile(pathMod.join(control.workspaceHost, rel), "utf8");
+        } catch {
+          throw enoent(p);
+        }
+      }
     }
     throw enoent(p);
   };
@@ -63,9 +83,10 @@ function makeProc(result, opts = {}) {
 }
 
 export class VM {
-  static create(options) {
+  static async create(options) {
     calls.create.push(options);
     const vm = makeVm(options);
+    if (control.createHook) await control.createHook(vm);
     vms.push(vm);
     return vm;
   }
@@ -171,16 +192,25 @@ export function makePlaceholderFunc({ length }) {
   return () => "x".repeat(length);
 }
 // Session registry: mirrors the real SDK — one entry per created/resumed VM,
-// alive while it is not closed, addressable by exact or prefix id.
+// alive while it is not closed, addressable by exact or prefix id. The
+// label comes from the create options (sessionLabel), like the real SDK.
 export async function listSessions() {
   return vms
     .filter((v) => !v.closed)
-    .map((v) => ({ id: v.id, pid: process.pid, socketPath: `/tmp/${v.id}.sock`, alive: true }));
+    .map((v) => ({
+      id: v.id,
+      pid: process.pid,
+      socketPath: `/tmp/${v.id}.sock`,
+      label: v.options?.sessionLabel ?? null,
+      alive: true,
+    }));
 }
 export async function findSession(query) {
   const all = await listSessions();
   return all.find((s) => s.id === query || s.id.startsWith(query)) ?? null;
 }
+/** No-op in the stub — no cross-process stale entries to reap. */
+export async function gcSessions() {}
 export function connectToSession() {
   throw new Error("not supported in stub");
 }

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { LABEL_PREFIX, checkpointDir, fail } from "./config.mjs";
-import { parseLabel } from "./spec.mjs";
+import { derivedPiName, parseLabel } from "./spec.mjs";
 
 /** All ginger checkpoints, newest first. */
 export function listCheckpoints() {
@@ -35,13 +35,22 @@ export function matchCheckpoints(queries) {
   // names would silently widen a match to its siblings.
   const matched = new Set();
   for (const q of queries) {
-    // A checkpoint can be addressed by its auto-name, its custom name, the
-    // workspace it belongs to (full path or basename), or its image file
-    // name (what ls shows in the IMAGE column).
+    // A checkpoint can be addressed by its auto-name, its custom name, its
+    // derived pi title (what ls shows for pi-owned snapshots), the workspace
+    // it belongs to (full path or basename), or its image file name (what ls
+    // shows in the IMAGE column).
     const keys = (m) => {
       const { ws, name } = parseLabel(m.label);
       const img = path.basename(m.path);
-      return [m.name, name, ws, ws ? path.basename(ws) : null, img, img.replace(/\.[^.]+$/, "")];
+      return [
+        m.name,
+        name,
+        derivedPiName(m.label),
+        ws,
+        ws ? path.basename(ws) : null,
+        img,
+        img.replace(/\.[^.]+$/, ""),
+      ];
     };
     const hits = all.filter((m) => keys(m).some((k) => k === q));
     if (hits.length > 0) {

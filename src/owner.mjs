@@ -277,7 +277,9 @@ async function waitForCheckpoint(outPath, ownerId) {
 
 export async function snapshotSession(session, spec, snapLabel = null) {
   fs.mkdirSync(checkpointDir, { recursive: true });
-  const name = `ginger-${VERSION.replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}`;
+  // Random suffix: two snapshots in the same millisecond must not collide
+  // on one file (they would silently overwrite each other's qcow + sidecar).
+  const name = `ginger-${VERSION.replace(/[^a-zA-Z0-9]+/g, "-")}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const outPath = path.join(checkpointDir, `${name}.qcow2`);
   const step = new Step(`Snapshotting session ${session.id}`);
   const lifecycle = startLifecycleOp(session.id, "snap");
