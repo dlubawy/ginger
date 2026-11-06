@@ -72,6 +72,12 @@ automatically when starting a session (and by the pi extension):
 { "direnv": true, "listen": true }
 ```
 
+Inside pi the profile is **trust-gated**: it is repo content, not user
+config, so the extension applies it only when pi reports the project as
+trusted (`ctx.isProjectTrusted()`). In an untrusted project the VM starts
+without it and a warning says so. (The CLI reads the file directly —
+typing `ginger` in a checkout is itself the deliberate act.)
+
 - `"direnv": true` — evaluate the workspace's `.envrc` once at VM start and
   inject the resulting environment into every tool command (a nix devshell
   means `just`, your language toolchains, etc. are just on PATH).

@@ -50,6 +50,8 @@
 //      process.cwd(): fresh boots mount the session cwd, tool calls carrying
 //      host paths under it translate into the guest, and a snapshot resume
 //      keeps the workspace recorded in the snapshot's spec
+//   P. an UNTRUSTED project's .pi/ginger.json is ignored (no ingress, no
+//      profile env) with a warning; the same checkout trusted applies it
 
 import fs from "node:fs";
 import os from "node:os";
@@ -142,6 +144,7 @@ function makeCtx(notifications) {
       getSessionFile: () => path.join(ROOT, "session.jsonl"),
     },
     model: { provider: "test-provider", id: "test-model" },
+    isProjectTrusted: () => true,
   };
 }
 
@@ -850,6 +853,78 @@ async function runBash(pi, ctx, id) {
   await dPi.handlers.session_shutdown({ reason: "quit" }, dCtx);
   sdkStub.control.workspaceHost = null;
   console.log("scenario 4 (workspace follows pi session cwd): PASS");
+}
+
+// ---- Scenario 5: an untrusted project's .pi/ginger.json is ignored -------
+{
+  fs.rmSync(path.join(ROOT, "cache"), { recursive: true, force: true });
+
+  // A checkout whose project profile would open ingress and inject env —
+  // exactly the kind of thing repo content must not be able to do before
+  // the user trusts the project.
+  const WSU = path.join(ROOT, "ws-untrusted");
+  fs.mkdirSync(path.join(WSU, ".pi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(WSU, ".pi", "ginger.json"),
+    JSON.stringify({ listen: true, env: ["PROFILE_LEAK=should-not-apply"] }, null, 2),
+  );
+
+  const mkCtx5 = (file, id, trusted) => {
+    const notifications = [];
+    const ctx = makeCtx(notifications);
+    ctx.sessionManager.getSessionId = () => id;
+    ctx.sessionManager.getSessionFile = () => file;
+    ctx.cwd = WSU;
+    ctx.isProjectTrusted = () => trusted;
+    return { ctx, notifications };
+  };
+
+  // A. Untrusted: the profile is ignored (no ingress, no profile env) and
+  // the skip is announced with a warning rather than silent.
+  const u1File = path.join(ROOT, "u1-session.jsonl");
+  fs.writeFileSync(u1File, JSON.stringify({ type: "session", id: "u-1" }) + "\n");
+  setGingerEnv();
+  const aPi = newExt();
+  const { ctx: u1Ctx, notifications: u1Notices } = mkCtx5(u1File, "u-1", false);
+  await aPi.handlers.session_start({ reason: "startup" }, u1Ctx);
+  const aVm = sdkStub.vms.at(-1);
+  const aSpec = JSON.parse(
+    fs.readFileSync(path.join(ROOT, "cache", "sessions", aVm.id, "spec.json"), "utf8"),
+  );
+  assert.equal(aSpec.listen ?? null, null, "untrusted: profile listen not applied");
+  assert.ok(
+    !(aSpec.env ?? []).some((e) => e.startsWith("PROFILE_LEAK=")),
+    "untrusted: profile env not injected",
+  );
+  assert.ok(
+    u1Notices.some(
+      ([k, m]) => k === "warning" && /not trusted/.test(m) && /ginger\.json/.test(m),
+    ),
+    "the untrusted skip is announced with a warning",
+  );
+
+  // B. The SAME checkout, trusted: the profile applies — proving A was the
+  // trust gate, not the file. Fresh tree (u-2) so u-1's snapshot can't
+  // interfere.
+  const u2File = path.join(ROOT, "u2-session.jsonl");
+  fs.writeFileSync(u2File, JSON.stringify({ type: "session", id: "u-2" }) + "\n");
+  await aPi.handlers.session_shutdown({ reason: "quit" }, u1Ctx);
+  assert.ok(aVm.closed, "VM closed on quit");
+  const bPi = newExt();
+  const { ctx: u2Ctx } = mkCtx5(u2File, "u-2", true);
+  await bPi.handlers.session_start({ reason: "startup" }, u2Ctx);
+  const bVm = sdkStub.vms.at(-1);
+  const bSpec = JSON.parse(
+    fs.readFileSync(path.join(ROOT, "cache", "sessions", bVm.id, "spec.json"), "utf8"),
+  );
+  assert.ok(bSpec.listen, "trusted: profile listen applied");
+  assert.ok(
+    (bSpec.env ?? []).includes("PROFILE_LEAK=should-not-apply"),
+    "trusted: profile env injected",
+  );
+
+  await bPi.handlers.session_shutdown({ reason: "quit" }, u2Ctx);
+  console.log("scenario 5 (untrusted project ignores .pi/ginger.json): PASS");
 }
 
 fs.rmSync(ROOT, { recursive: true, force: true });

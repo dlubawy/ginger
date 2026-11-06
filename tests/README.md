@@ -30,7 +30,9 @@ carrying no redundant `name=` (the display title is derived from `pi=` +
 workspace following pi's per-session cwd — fresh boots mount `ctx.cwd`
 rather than `process.cwd()`, tool calls carrying host paths under it
 translate into the guest, and a snapshot resume keeps the workspace recorded
-in the snapshot's spec; and the lifecycle-marker protocol itself (visible to
+in the snapshot's spec; an untrusted project's `.pi/ginger.json` being
+ignored (no ingress, no profile env) with a warning while the same checkout
+trusted applies it; and the lifecycle-marker protocol itself (visible to
 other pids, ignored for its own pid, expires when unrefreshed).
 
 ```sh

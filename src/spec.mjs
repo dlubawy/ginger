@@ -399,11 +399,13 @@ export async function buildSpec(opts) {
 
   // Profile file: an explicit --profile name, or a project-local
   // <workspace>/.pi/ginger.json when present (how the pi extension
-  // customizes the VM for a checkout).
+  // customizes the VM for a checkout). The auto-load is suppressed with
+  // projectProfile: false — that file is repo content, not user config,
+  // so the pi extension passes this while its project is untrusted.
   let file = {};
   if (opts.profile) {
     file = loadProfileFile(profilePath(opts.profile));
-  } else if (wsPath) {
+  } else if (wsPath && opts.projectProfile !== false) {
     const autoProfile = path.join(wsPath, ".pi", "ginger.json");
     if (fs.existsSync(autoProfile)) file = loadProfileFile(autoProfile);
   }

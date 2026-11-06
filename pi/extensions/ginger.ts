@@ -12,9 +12,12 @@
  *   - The session's host working directory is mounted at
  *     /workspace/<basename> in the guest (the same mount buildSpec computes),
  *     and the VM spec is derived from it (plus an optional project-local
- *     <cwd>/.pi/ginger.json profile file, read by ginger's buildSpec). Tools
- *     run in the spec's cwd (/workspace/<basename> by default, or the
- *     profile's `cwd`), matching what an attached ginger shell would see.
+ *     <cwd>/.pi/ginger.json profile file, read by ginger's buildSpec). The
+ *     profile is repo content, not user config: it is only applied when pi
+ *     reports the project as trusted (ctx.isProjectTrusted()); otherwise a
+ *     warning is shown and the spec is built without it. Tools run in the
+ *     spec's cwd (/workspace/<basename> by default, or the profile's `cwd`),
+ *     matching what an attached ginger shell would see.
  *   - "The session's working directory" is pi's per-session cwd (ctx.cwd —
  *     restored from the session file on /resume), NOT process.cwd(): resuming
  *     a session recorded in another checkout mounts that checkout. When a
@@ -1123,6 +1126,18 @@ export default function (pi: ExtensionAPI) {
     // so it can differ from process.cwd() (where pi was launched). The
     // getter asserts the ctx is active, so read it now, before any await.
     const piCwd = typeof ctx?.cwd === "string" && ctx.cwd ? ctx.cwd : localCwd;
+    // Project trust gates the project-local profile (.pi/ginger.json): that
+    // file is repo content, so an untrusted checkout must not be able to
+    // shape the VM spec (ingress, mounts, secrets, env). Read while ctx is
+    // active; pi builds without a trust concept default to trusted.
+    const trusted =
+      ctx && typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true;
+    if (!trusted && fs.existsSync(path.join(piCwd, ".pi", "ginger.json"))) {
+      ui?.notify(
+        "Ginger: project is not trusted — ignoring .pi/ginger.json (trust the project to apply it)",
+        "warning",
+      );
+    }
     if (ui) ui.setStatus("ginger", ui.theme.fg("accent", `Ginger: starting VM for ${piCwd}`));
     // Key snapshots by the ROOT of this session's fork tree (see
     // findRootSessionId): every member of the tree shares one VM, so they
@@ -1153,7 +1168,9 @@ export default function (pi: ExtensionAPI) {
       const meta = await gingerCall(() => resolveSnapshot(g, seed));
       spec = meta.spec
         ? { ...meta.spec }
-        : await gingerCall(() => g.spec.buildSpec({ workspace: wsPath }));
+        : await gingerCall(() =>
+            g.spec.buildSpec({ workspace: wsPath, projectProfile: trusted }),
+          );
       spec.checkpoint = meta.path;
       const prev = g.spec.parseLabel(meta.label ?? "");
       spec.label = g.spec.makeLabel({ ws: prev.ws ?? wsPath, pi: piId });
@@ -1168,7 +1185,9 @@ export default function (pi: ExtensionAPI) {
         const cp = mine[0];
         spec = cp.spec
           ? { ...cp.spec, checkpoint: cp.path }
-          : await gingerCall(() => g.spec.buildSpec({ workspace: wsPath, piSession: piId }));
+          : await gingerCall(() =>
+              g.spec.buildSpec({ workspace: wsPath, piSession: piId, projectProfile: trusted }),
+            );
         origin = "resumed";
         if (mine.length > 1) {
           // One snapshot per session tree: the older ones are redundant now.
@@ -1186,7 +1205,9 @@ export default function (pi: ExtensionAPI) {
             ui?.notify(`Ginger: removed ${removed} older snapshot(s) for this session tree`, "info");
         }
       } else {
-        spec = await gingerCall(() => g.spec.buildSpec({ workspace: wsPath, piSession: piId }));
+        spec = await gingerCall(() =>
+          g.spec.buildSpec({ workspace: wsPath, piSession: piId, projectProfile: trusted }),
+        );
         origin = "fresh";
       }
     }
