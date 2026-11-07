@@ -38,6 +38,9 @@ let
 in
 symlinkJoin {
   name = "gondolin-image";
+  passthru = {
+    contents = image.contents;
+  };
   paths = [
     buildConfig
     image

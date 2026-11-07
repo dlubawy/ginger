@@ -33,15 +33,20 @@ in
   inherit piHome;
   gingerBin = writeShellApplication {
     name = "ginger";
-    runtimeInputs = with pkgs; [
-      # nodejs runs the ginger sources; qemu + lz4 are required by the
-      # gondolin SDK to spawn the VMM (mirrors the gondolin package's makeWrapper).
-      nodejs
-      podman
-      qemu
-      lz4
+    runtimeInputs = [
       gondolin
-    ];
+    ]
+    ++ (builtins.attrValues {
+      inherit (pkgs)
+        # nodejs runs the ginger sources; qemu + lz4 are required by the
+        # gondolin SDK to spawn the VMM (mirrors the gondolin package's makeWrapper).
+        nodejs
+        podman
+        qemu
+        lz4
+        ;
+    })
+    ++ gondolinImage.contents;
     text = ''
       export GINGER_VERSION="${version}"
       export GINGER_IMAGE_TAR="${gondolinImage}/gondolin-image.tar"

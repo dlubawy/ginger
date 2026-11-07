@@ -32,6 +32,43 @@ let
     runtimeInputs = (builtins.attrValues { inherit (containerPkgs) curl gnugrep; });
     text = (builtins.readFile ./playwright-dashboard.sh);
   };
+  imageContents = [
+    containerPkgs.dockerTools.caCertificates
+    chromiumLauncher
+    playwrightDashboard
+    (containerPkgs.writeShellApplication {
+      name = "gondolin-bash";
+      runtimeInputs = (builtins.attrValues { inherit (containerPkgs) nodejs qemu gondolin; });
+      text = ''
+        exec node ${runInnerVM}/run-inner-vm.mjs "$@"
+      '';
+    })
+    piHome
+  ]
+  ++ (builtins.attrValues {
+    inherit (containerPkgs)
+      chromium
+      curl
+      direnv
+      glibc
+      fd
+      fontconfig
+      git
+      gnused
+      gondolin
+      gsettings-desktop-schemas
+      mesa
+      nix
+      nodejs
+      noto-fonts
+      openssh
+      pi-coding-agent
+      playwright-cli
+      python3
+      ripgrep
+      uv
+      ;
+  });
   image = dockerTools.buildLayeredImage {
     name = "gondolin-image";
     fromImage = dockerTools.pullImage {
@@ -40,43 +77,7 @@ let
       hash = "sha256-3NOrK7BrtlCX23qGfDWlsgv3vBYmBLTQKq/4sLp8o8c=";
     };
     tag = version;
-    contents = [
-      containerPkgs.dockerTools.caCertificates
-      chromiumLauncher
-      playwrightDashboard
-      (containerPkgs.writeShellApplication {
-        name = "gondolin-bash";
-        runtimeInputs = (builtins.attrValues { inherit (containerPkgs) nodejs qemu gondolin; });
-        text = ''
-          exec node ${runInnerVM}/run-inner-vm.mjs "$@"
-        '';
-      })
-      piHome
-    ]
-    ++ (builtins.attrValues {
-      inherit (containerPkgs)
-        chromium
-        curl
-        direnv
-        glibc
-        fd
-        fontconfig
-        git
-        gnused
-        gondolin
-        gsettings-desktop-schemas
-        mesa
-        nix
-        nodejs
-        noto-fonts
-        openssh
-        pi-coding-agent
-        playwright-cli
-        python3
-        ripgrep
-        uv
-        ;
-    });
+    contents = imageContents;
     includeStorePaths = false;
     extraCommands = ''
       mkdir -p ./bin ./libexec ./usr/sbin
@@ -101,7 +102,13 @@ let
     '';
   };
 in
-pkgs.runCommand "gondolin-image" { } ''
-  mkdir -p $out
-  cp ${image} $out/gondolin-image.tar
-''
+pkgs.runCommand "gondolin-image"
+  {
+    passthru = {
+      contents = imageContents;
+    };
+  }
+  ''
+    mkdir -p $out
+    cp ${image} $out/gondolin-image.tar
+  ''
