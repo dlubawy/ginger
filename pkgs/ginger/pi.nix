@@ -27,7 +27,6 @@ in
 pkgs.runCommand "pi-agent-config-${version}" { } ''
   mkdir -p $out/etc/pi/agent
   install -m 0644 ${../../pi/settings.json}    $out/etc/pi/agent/settings.json
-  install -m 0644 ${../../pi/models.json}      $out/etc/pi/agent/models.json
   install -m 0644 ${../../pi/formatters.json}  $out/etc/pi/agent/formatters.json
   cp -r ${extensions}/extensions $out/etc/pi/agent/extensions
   cp -r ${skills}/skills         $out/etc/pi/agent/skills

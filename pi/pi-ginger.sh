@@ -14,7 +14,7 @@
 # state, so nothing in it is ever deleted:
 #   - extensions/, skills/, prompts/, themes/: ginger's files are copied
 #     over; files the user added inside those trees are left alone.
-#   - settings.json / models.json / formatters.json: installed as-is when
+#   - settings.json / formatters.json: installed as-is when
 #     absent, otherwise deep-merged with the existing file where existing
 #     (user) values win and new keys from ginger are added. Arrays are not
 #     merged element-wise — the user's array wins.
@@ -77,7 +77,7 @@ install_config() {
   done
 
   # JSON files: install as-is when absent, otherwise merge (user wins).
-  for f in settings.json models.json formatters.json; do
+  for f in settings.json formatters.json; do
     [ -f "$CONFIG_DIR/$f" ] || continue
     if [ ! -f "$AGENT_DIR/$f" ]; then
       cp "$CONFIG_DIR/$f" "$AGENT_DIR/$f"
