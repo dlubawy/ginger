@@ -126,10 +126,10 @@ Options:
                                sshAllowHosts, sshAgent, sshKnownHosts,
                                sshCredentials, disableWebSockets, ssh,
                                listen, direnv). CLI flags take precedence
-                               over the profile. Without --profile, a
-                               project-local <workspace>/.pi/ginger.json is
-                               used automatically when present (this is how
-                               the pi extension customizes its VM).
+                               over the profile. (The pi extension does not
+                               use profiles: it reads its VM options from
+                               the "ginger" key of pi's settings.json —
+                               project or global — which pi trust-gates.)
     -d, --direnv               Allow direnv in workspace
     -l, --listen [ADDR]        Start an ingress gateway (HOST:PORT; default
                                127.0.0.1 with an ephemeral port)

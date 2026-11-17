@@ -358,6 +358,21 @@ export function profilePath(name) {
   return path.join(profilesDir, `${n}.json`);
 }
 
+/**
+ * Validate parsed profile content (a JSON object whose keys are the spec
+ * keys above). `source` names where it came from for error messages.
+ */
+export function parseProfileObject(raw, source) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    fail(`${source} must be a JSON object`);
+  for (const key of Object.keys(raw))
+    if (!SPEC_FILE_KEYS.has(key))
+      fail(
+        `unknown key in ${source}: ${key} (expected one of: ${[...SPEC_FILE_KEYS].join(", ")})`,
+      );
+  return raw;
+}
+
 /** Load and validate a profile JSON file. */
 export function loadProfileFile(file) {
   if (!fs.existsSync(file)) fail(`profile not found: ${file} (create it under ${profilesDir}/)`);
@@ -367,19 +382,12 @@ export function loadProfileFile(file) {
   } catch (err) {
     fail(`cannot read profile file ${file}: ${err.message}`);
   }
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    fail(`profile file must contain a JSON object: ${file}`);
-  for (const key of Object.keys(raw))
-    if (!SPEC_FILE_KEYS.has(key))
-      fail(
-        `unknown key in profile file: ${key} (expected one of: ${[...SPEC_FILE_KEYS].join(", ")})`,
-      );
-  return raw;
+  return parseProfileObject(raw, `profile file ${file}`);
 }
 
 function requireStringArray(value, what) {
   if (!Array.isArray(value) || value.some((v) => typeof v !== "string"))
-    fail(`profile file "${what}" must be an array of strings`);
+    fail(`profile "${what}" must be an array of strings`);
   return value;
 }
 
@@ -388,26 +396,29 @@ function requireStringArray(value, what) {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the session spec from CLI options and an optional profile file.
- * Single-valued options: CLI flag wins over the file. List-valued options:
- * file entries first, CLI entries appended. Built-in defaults (the /nix
- * mount, GINGER_VERSION) are always applied on top.
+ * Build the session spec from CLI options and an optional profile — either
+ * a named profile file (--profile, ~/.config/ginger/profiles/NAME.json; the
+ * CLI's mechanism) or profileContent (an already-parsed object; how the pi
+ * extension passes the "ginger" key of pi's settings). A --profile name wins
+ * over profileContent. Single-valued options: CLI flag wins over the
+ * profile. List-valued options: profile entries first, CLI entries appended.
+ * Built-in defaults (the /nix mount, GINGER_VERSION) are always applied on
+ * top.
  */
 export async function buildSpec(opts) {
   // -- cwd: --cwd wins; else the profile file; else the workspace default.
   const wsPath = opts.workspace ? path.resolve(opts.workspace) : null;
 
-  // Profile file: an explicit --profile name, or a project-local
-  // <workspace>/.pi/ginger.json when present (how the pi extension
-  // customizes the VM for a checkout). The auto-load is suppressed with
-  // projectProfile: false — that file is repo content, not user config,
-  // so the pi extension passes this while its project is untrusted.
+  // Profile content: an explicit --profile name (a file under
+  // ~/.config/ginger/profiles/), or profileContent — already-parsed profile
+  // object passed in by the pi extension from pi's settings (the "ginger"
+  // key of .pi/settings.json / ~/.pi/agent/settings.json, merged and
+  // trust-gated by pi itself). An explicit --profile name wins.
   let file = {};
   if (opts.profile) {
     file = loadProfileFile(profilePath(opts.profile));
-  } else if (wsPath && opts.projectProfile !== false) {
-    const autoProfile = path.join(wsPath, ".pi", "ginger.json");
-    if (fs.existsSync(autoProfile)) file = loadProfileFile(autoProfile);
+  } else if (opts.profileContent !== undefined && opts.profileContent !== null) {
+    file = parseProfileObject(opts.profileContent, "pi settings \"ginger\"");
   }
   const wsName = wsPath ? path.basename(wsPath) : null;
   let cwd = opts.cwd ?? (typeof file.cwd === "string" ? file.cwd : null);

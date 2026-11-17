@@ -15,7 +15,7 @@
 //     it, the extension is imported in place and relies on local resolution.
 //
 // Asserts:
-//   A. spec from .pi/ginger.json reaches VM.create options
+//   A. spec from pi settings' ginger key reaches VM.create options
 //   B. owner features applied after create (ingress for listen, direnv allow)
 //   C. ingress URL recorded in access.json AND surfaced in notification +
 //      system prompt + /ginger status
@@ -50,8 +50,9 @@
 //      process.cwd(): fresh boots mount the session cwd, tool calls carrying
 //      host paths under it translate into the guest, and a snapshot resume
 //      keeps the workspace recorded in the snapshot's spec
-//   P. an UNTRUSTED project's .pi/ginger.json is ignored (no ingress, no
-//      profile env) with a warning; the same checkout trusted applies it
+//   P. an UNTRUSTED project's ginger settings (.pi/settings.json) are
+//      dropped by pi's merge (no ingress, no project env) while GLOBAL
+//      ginger settings still apply, with a warning; trusted applies them
 
 import fs from "node:fs";
 import os from "node:os";
@@ -66,12 +67,34 @@ const STUB = path.join(TESTS, "sdk-stub.mjs");
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "ginger-pi-e2e-"));
 const WS = path.join(ROOT, "ws");
+fs.mkdirSync(WS);
 
-fs.mkdirSync(path.join(WS, ".pi"), { recursive: true });
-fs.writeFileSync(
-  path.join(WS, ".pi", "ginger.json"),
-  JSON.stringify({ direnv: true, listen: true }, null, 2),
-);
+// Model of pi's settings (faithful to SettingsManager): getSettings() is the
+// global (~/.pi/agent/settings.json) + project (.pi/settings.json) deep
+// merge — with the PROJECT part dropped entirely while the project is
+// untrusted. That drop is the security property this whole design rests on:
+// settings.json is one of pi's trust-requiring project resources, so a repo
+// carrying ginger config triggers pi's trust flow and contributes nothing
+// until trusted. (The old .pi/ginger.json was NOT in that list, so repos
+// with only it were auto-trusted and always loaded.)
+const piSettings = { global: {}, project: {}, trusted: true };
+function mergeSettings(base, over) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(over)) {
+    if (v === undefined) continue;
+    const bothObjects =
+      v && typeof v === "object" && !Array.isArray(v) &&
+      out[k] && typeof out[k] === "object" && !Array.isArray(out[k]);
+    out[k] = bothObjects ? mergeSettings(out[k], v) : v;
+  }
+  return out;
+}
+function piGetSettings() {
+  const merged = piSettings.trusted
+    ? mergeSettings(piSettings.global, piSettings.project)
+    : { ...piSettings.global };
+  return structuredClone(merged);
+}
 
 // Host agent dir (stands in for ~/.pi/agent) — must NEVER be served to the
 // guest. The guest's own curated copy lives at /etc/pi/agent (image-baked),
@@ -128,6 +151,7 @@ function makePi() {
       registerCommand: (name, def) => {
         commands[name] = def;
       },
+      getSettings: piGetSettings,
     },
   };
 }
@@ -144,7 +168,9 @@ function makeCtx(notifications) {
       getSessionFile: () => path.join(ROOT, "session.jsonl"),
     },
     model: { provider: "test-provider", id: "test-model" },
-    isProjectTrusted: () => true,
+    // mirrors the settings model above (pi tracks one trust state that both
+    // feed from)
+    isProjectTrusted: () => piSettings.trusted,
   };
 }
 
@@ -200,7 +226,15 @@ async function runBash(pi, ctx, id) {
 }
 
 // ---- Scenario 1: profile with direnv + listen -----------------------------
+// (the profile is the "ginger" key of pi's PROJECT settings — the file
+// .pi/settings.json on disk; the mock feeds it via getSettings)
 {
+  fs.mkdirSync(path.join(WS, ".pi"));
+  fs.writeFileSync(
+    path.join(WS, ".pi", "settings.json"),
+    JSON.stringify({ ginger: { direnv: true, listen: true } }, null, 2),
+  );
+  piSettings.project = { ginger: { direnv: true, listen: true } };
   const { pi, ctx, notifications, vm } = await startScenario();
 
   // A. spec reached VM.create
@@ -303,6 +337,7 @@ async function runBash(pi, ctx, id) {
   for (const k of Object.keys(sdkStub.calls)) sdkStub.calls[k].length = 0;
   fs.rmSync(path.join(ROOT, "cache"), { recursive: true, force: true });
   fs.rmSync(path.join(WS, ".pi"), { recursive: true, force: true });
+  piSettings.project = {}; // no ginger config at all
 
   const { pi, ctx, notifications, vm } = await startScenario();
   const dumpsBefore = sdkStub.dumpCount;
@@ -855,76 +890,93 @@ async function runBash(pi, ctx, id) {
   console.log("scenario 4 (workspace follows pi session cwd): PASS");
 }
 
-// ---- Scenario 5: an untrusted project's .pi/ginger.json is ignored -------
+// ---- Scenario 5: pi settings as the profile source + trust semantics -----
+// The VM options live in the "ginger" key of pi's settings. Pi merges
+// project (.pi/settings.json) over global (~/.pi/agent/settings.json) and
+// drops the PROJECT part while untrusted — so repo content can shape the VM
+// only after the user trusts the project, and user-level (global) config
+// always applies.
 {
   fs.rmSync(path.join(ROOT, "cache"), { recursive: true, force: true });
 
-  // A checkout whose project profile would open ingress and inject env —
-  // exactly the kind of thing repo content must not be able to do before
-  // the user trusts the project.
+  // A checkout whose PROJECT ginger settings would open ingress and inject
+  // env — exactly the kind of thing repo content must not be able to do
+  // before the user trusts the project. The user's GLOBAL config carries a
+  // harmless env var that must apply regardless of trust.
   const WSU = path.join(ROOT, "ws-untrusted");
   fs.mkdirSync(path.join(WSU, ".pi"), { recursive: true });
   fs.writeFileSync(
-    path.join(WSU, ".pi", "ginger.json"),
-    JSON.stringify({ listen: true, env: ["PROFILE_LEAK=should-not-apply"] }, null, 2),
+    path.join(WSU, ".pi", "settings.json"),
+    JSON.stringify({ ginger: { listen: true, env: ["PROJECT_LEAK=should-not-apply"] } }, null, 2),
   );
+  piSettings.global = { ginger: { env: ["GLOBAL_OK=always-applies"] } };
+  piSettings.project = { ginger: { listen: true, env: ["PROJECT_LEAK=should-not-apply"] } };
 
-  const mkCtx5 = (file, id, trusted) => {
+  const mkCtx5 = (file, id) => {
     const notifications = [];
     const ctx = makeCtx(notifications);
     ctx.sessionManager.getSessionId = () => id;
     ctx.sessionManager.getSessionFile = () => file;
     ctx.cwd = WSU;
-    ctx.isProjectTrusted = () => trusted;
     return { ctx, notifications };
   };
 
-  // A. Untrusted: the profile is ignored (no ingress, no profile env) and
-  // the skip is announced with a warning rather than silent.
+  // A. Untrusted: pi's merge drops the project part — no ingress, no
+  // project env — but the GLOBAL ginger settings still apply, and the skip
+  // is announced with a warning rather than silent.
   const u1File = path.join(ROOT, "u1-session.jsonl");
   fs.writeFileSync(u1File, JSON.stringify({ type: "session", id: "u-1" }) + "\n");
+  piSettings.trusted = false;
   setGingerEnv();
   const aPi = newExt();
-  const { ctx: u1Ctx, notifications: u1Notices } = mkCtx5(u1File, "u-1", false);
+  const { ctx: u1Ctx, notifications: u1Notices } = mkCtx5(u1File, "u-1");
   await aPi.handlers.session_start({ reason: "startup" }, u1Ctx);
   const aVm = sdkStub.vms.at(-1);
   const aSpec = JSON.parse(
     fs.readFileSync(path.join(ROOT, "cache", "sessions", aVm.id, "spec.json"), "utf8"),
   );
-  assert.equal(aSpec.listen ?? null, null, "untrusted: profile listen not applied");
+  assert.equal(aSpec.listen ?? null, null, "untrusted: project listen not applied");
   assert.ok(
-    !(aSpec.env ?? []).some((e) => e.startsWith("PROFILE_LEAK=")),
-    "untrusted: profile env not injected",
+    !(aSpec.env ?? []).some((e) => e.startsWith("PROJECT_LEAK=")),
+    "untrusted: project env not injected",
+  );
+  assert.ok(
+    (aSpec.env ?? []).includes("GLOBAL_OK=always-applies"),
+    "untrusted: GLOBAL ginger settings still apply (trust gates project, not global)",
   );
   assert.ok(
     u1Notices.some(
-      ([k, m]) => k === "warning" && /not trusted/.test(m) && /ginger\.json/.test(m),
+      ([k, m]) => k === "warning" && /not trusted/.test(m) && /settings\.json/.test(m),
     ),
     "the untrusted skip is announced with a warning",
   );
 
-  // B. The SAME checkout, trusted: the profile applies — proving A was the
-  // trust gate, not the file. Fresh tree (u-2) so u-1's snapshot can't
-  // interfere.
+  // B. The SAME checkout, trusted: the project settings join the merge and
+  // apply — proving A was the trust gate, not the file. Fresh tree (u-2) so
+  // u-1's snapshot can't interfere.
   const u2File = path.join(ROOT, "u2-session.jsonl");
   fs.writeFileSync(u2File, JSON.stringify({ type: "session", id: "u-2" }) + "\n");
   await aPi.handlers.session_shutdown({ reason: "quit" }, u1Ctx);
   assert.ok(aVm.closed, "VM closed on quit");
+  piSettings.trusted = true;
   const bPi = newExt();
-  const { ctx: u2Ctx } = mkCtx5(u2File, "u-2", true);
+  const { ctx: u2Ctx } = mkCtx5(u2File, "u-2");
   await bPi.handlers.session_start({ reason: "startup" }, u2Ctx);
   const bVm = sdkStub.vms.at(-1);
   const bSpec = JSON.parse(
     fs.readFileSync(path.join(ROOT, "cache", "sessions", bVm.id, "spec.json"), "utf8"),
   );
-  assert.ok(bSpec.listen, "trusted: profile listen applied");
+  assert.ok(bSpec.listen, "trusted: project listen applied");
   assert.ok(
-    (bSpec.env ?? []).includes("PROFILE_LEAK=should-not-apply"),
-    "trusted: profile env injected",
+    (bSpec.env ?? []).includes("PROJECT_LEAK=should-not-apply"),
+    "trusted: project env injected",
   );
 
   await bPi.handlers.session_shutdown({ reason: "quit" }, u2Ctx);
-  console.log("scenario 5 (untrusted project ignores .pi/ginger.json): PASS");
+  piSettings.trusted = true;
+  piSettings.global = {};
+  piSettings.project = {};
+  console.log("scenario 5 (pi settings profile + trust semantics): PASS");
 }
 
 fs.rmSync(ROOT, { recursive: true, force: true });

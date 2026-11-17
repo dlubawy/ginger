@@ -11,13 +11,15 @@
  * Session lifecycle:
  *   - The session's host working directory is mounted at
  *     /workspace/<basename> in the guest (the same mount buildSpec computes),
- *     and the VM spec is derived from it (plus an optional project-local
- *     <cwd>/.pi/ginger.json profile file, read by ginger's buildSpec). The
- *     profile is repo content, not user config: it is only applied when pi
- *     reports the project as trusted (ctx.isProjectTrusted()); otherwise a
- *     warning is shown and the spec is built without it. Tools run in the
- *     spec's cwd (/workspace/<basename> by default, or the profile's `cwd`),
- *     matching what an attached ginger shell would see.
+ *     and the VM spec is derived from it (plus the "ginger" key of pi's
+ *     settings — .pi/settings.json merged over ~/.pi/agent/settings.json,
+ *     read via pi.getSettings() and applied by ginger's buildSpec). Pi
+ *     enforces trust on the project file itself: settings.json is one of
+ *     pi's trust-requiring project resources, so an untrusted checkout
+ *     contributes nothing to the merged settings and cannot shape its VM
+ *     spec (a warning notes when such a config is being skipped). Tools run
+ *     in the spec's cwd (/workspace/<basename> by default, or the profile's
+ *     `cwd`), matching what an attached ginger shell would see.
  *   - "The session's working directory" is pi's per-session cwd (ctx.cwd —
  *     restored from the session file on /resume), NOT process.cwd(): resuming
  *     a session recorded in another checkout mounts that checkout. When a
@@ -94,8 +96,8 @@
  *
  * Environment isolation:
  *   - Tool commands run in the guest with the VM's own environment (image
- *     defaults plus the spec's env: GINGER_VERSION, profile env from
- *     .pi/ginger.json, host secrets) — exactly what an attached ginger shell
+ *     defaults plus the spec's env: GINGER_VERSION, profile env from pi
+ *     settings' ginger key, host secrets) — exactly what an attached ginger shell
  *     sees. The host process.env is NOT forwarded into the guest (pi builds
  *     the exec env as a copy of it, which would leak host secrets into the
  *     sandbox); only pi's own session variables (PI_SESSION_ID,
@@ -1048,7 +1050,7 @@ export default function (pi: ExtensionAPI) {
 
   // The session's host workspace is mounted at /workspace/<basename>
   // (buildSpec's mount), and the tools run in the spec's cwd, which defaults
-  // to that mount but a project profile (.pi/ginger.json) can override with
+  // to that mount but the pi-settings profile can override with
   // `cwd`. Which workspace is mounted follows the ACTIVE VM's spec — a
   // resumed session may live in a different directory than process.cwd()
   // (vmWorkspace, set by startVm); before any VM exists we fall back to the
@@ -1126,17 +1128,41 @@ export default function (pi: ExtensionAPI) {
     // so it can differ from process.cwd() (where pi was launched). The
     // getter asserts the ctx is active, so read it now, before any await.
     const piCwd = typeof ctx?.cwd === "string" && ctx.cwd ? ctx.cwd : localCwd;
-    // Project trust gates the project-local profile (.pi/ginger.json): that
-    // file is repo content, so an untrusted checkout must not be able to
-    // shape the VM spec (ingress, mounts, secrets, env). Read while ctx is
-    // active; pi builds without a trust concept default to trusted.
+    // VM options come from pi's settings — the "ginger" key, merged by pi
+    // from ~/.pi/agent/settings.json (global) and .pi/settings.json
+    // (project). Trust is enforced BY PI: settings.json is one of pi's
+    // trust-requiring project resources, so its presence in a repo triggers
+    // pi's trust flow, and while the project is untrusted pi drops the whole
+    // project file from the merged settings. An untrusted checkout therefore
+    // cannot shape its VM spec (ingress, mounts, secrets, env) — no local
+    // re-check needed. (The old .pi/ginger.json was NOT a trust-requiring
+    // resource, so repos carrying only it were auto-trusted and it always
+    // loaded.) getSettings reads live merged settings; the ginger key is
+    // ours, so cast past pi's typed Settings.
+    const gingerSettings: unknown = (() => {
+      try {
+        return (pi.getSettings() as unknown as { ginger?: unknown }).ginger;
+      } catch {
+        return undefined; // settings unavailable — boot with no profile
+      }
+    })();
+    // Visibility only: pi silently drops untrusted project settings, so tell
+    // the user when a ginger config they can see on disk is not applying.
     const trusted =
       ctx && typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : true;
-    if (!trusted && fs.existsSync(path.join(piCwd, ".pi", "ginger.json"))) {
-      ui?.notify(
-        "Ginger: project is not trusted — ignoring .pi/ginger.json (trust the project to apply it)",
-        "warning",
-      );
+    if (!trusted) {
+      try {
+        const projSettings = JSON.parse(
+          fs.readFileSync(path.join(piCwd, ".pi", "settings.json"), "utf8"),
+        ) as { ginger?: unknown };
+        const g = projSettings?.ginger;
+        if (g && typeof g === "object" && !Array.isArray(g) && Object.keys(g).length > 0) {
+          ui?.notify(
+            "Ginger: project is not trusted — ignoring the ginger settings in .pi/settings.json (trust the project to apply them)",
+            "warning",
+          );
+        }
+      } catch {}
     }
     if (ui) ui.setStatus("ginger", ui.theme.fg("accent", `Ginger: starting VM for ${piCwd}`));
     // Key snapshots by the ROOT of this session's fork tree (see
@@ -1160,7 +1186,7 @@ export default function (pi: ExtensionAPI) {
     // Resolve the spec for this pi session:
     //   1. GINGER_PI_SNAPSHOT — seed a fresh session from an existing snapshot
     //   2. latest checkpoint labeled pi=<this pi session id> — resume it
-    //   3. otherwise build a new spec (workspace + optional .pi/ginger.json)
+    //   3. otherwise build a new spec (workspace + pi settings' ginger key)
     let spec: Record<string, any>;
     let origin: "fresh" | "resumed" | "seeded";
     const seed = process.env.GINGER_PI_SNAPSHOT?.trim();
@@ -1169,7 +1195,7 @@ export default function (pi: ExtensionAPI) {
       spec = meta.spec
         ? { ...meta.spec }
         : await gingerCall(() =>
-            g.spec.buildSpec({ workspace: wsPath, projectProfile: trusted }),
+            g.spec.buildSpec({ workspace: wsPath, profileContent: gingerSettings }),
           );
       spec.checkpoint = meta.path;
       const prev = g.spec.parseLabel(meta.label ?? "");
@@ -1186,7 +1212,11 @@ export default function (pi: ExtensionAPI) {
         spec = cp.spec
           ? { ...cp.spec, checkpoint: cp.path }
           : await gingerCall(() =>
-              g.spec.buildSpec({ workspace: wsPath, piSession: piId, projectProfile: trusted }),
+              g.spec.buildSpec({
+                workspace: wsPath,
+                piSession: piId,
+                profileContent: gingerSettings,
+              }),
             );
         origin = "resumed";
         if (mine.length > 1) {
@@ -1206,7 +1236,11 @@ export default function (pi: ExtensionAPI) {
         }
       } else {
         spec = await gingerCall(() =>
-          g.spec.buildSpec({ workspace: wsPath, piSession: piId, projectProfile: trusted }),
+          g.spec.buildSpec({
+            workspace: wsPath,
+            piSession: piId,
+            profileContent: gingerSettings,
+          }),
         );
         origin = "fresh";
       }

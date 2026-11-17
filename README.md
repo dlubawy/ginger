@@ -63,20 +63,23 @@ ginger -e "fix the failing test"   # one-shot non-interactive exec
 With no arguments, `ginger` shows a picker of active sessions and saved
 snapshots — resume, snapshot, or start fresh.
 
-### Project profile: `.pi/ginger.json`
+### VM options: the `ginger` key of pi's settings
 
-A workspace can carry its VM preferences in `.pi/ginger.json`, picked up
-automatically when starting a session (and by the pi extension):
+The pi extension reads its VM options from the **`ginger` key of pi's
+settings** — `.pi/settings.json` (project) merged over
+`~/.pi/agent/settings.json` (global), via `pi.getSettings()`:
 
 ```json
-{ "direnv": true, "listen": true }
+{ "ginger": { "direnv": true, "listen": true } }
 ```
 
-Inside pi the profile is **trust-gated**: it is repo content, not user
-config, so the extension applies it only when pi reports the project as
-trusted (`ctx.isProjectTrusted()`). In an untrusted project the VM starts
-without it and a warning says so. (The CLI reads the file directly —
-typing `ginger` in a checkout is itself the deliberate act.)
+Trust is enforced by pi itself: `settings.json` is one of pi's
+trust-requiring project resources, so a repo carrying ginger config triggers
+pi's trust flow — and while the project is untrusted, pi drops the whole
+project file from the merged settings. An untrusted checkout therefore
+cannot shape its VM spec (ingress, mounts, secrets, env); your **global**
+`ginger` settings always apply. When an ignored project config is detected,
+pi is told with a warning.
 
 - `"direnv": true` — evaluate the workspace's `.envrc` once at VM start and
   inject the resulting environment into every tool command (a nix devshell
@@ -87,8 +90,13 @@ typing `ginger` in a checkout is itself the deliberate act.)
 
 The full key set (and the equivalent CLI flags) is documented in
 `ginger --help`: memory/rootfs sizing, extra host mounts, egress
-allow-lists and per-host secrets, TCP mapping, SSH in both directions, and
-named profiles under `~/.config/ginger/profiles/`.
+allow-lists and per-host secrets, TCP mapping, SSH in both directions. The
+CLI's own mechanism for the same options is `--profile NAME`, which loads
+`~/.config/ginger/profiles/NAME.json`.
+
+> Migration: the old project-local `.pi/ginger.json` file is no longer read
+> by anything — move its contents to the `ginger` key of your (project or
+> global) pi `settings.json`.
 
 ### The pi experience
 
