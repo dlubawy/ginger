@@ -47,16 +47,16 @@ const CLASSIFIER_ENDPOINT = process.env.AUTO_NUDGE_CLASSIFIER_URL ?? "/systemone
 const CLASSIFIER_MODEL = process.env.AUTO_NUDGE_CLASSIFIER_MODEL ?? "default";
 const NUDGE_THRESHOLD = Number(process.env.AUTO_NUDGE_CLASSIFIER_THRESHOLD ?? 0.5);
 // ~200-250 tokens of text; leaves comfortable headroom inside the 1024 window.
-const CLASSIFIER_TEXT_LIMIT = Number(process.env.AUTO_NUDGE_CLASSIFIER_CHARS ?? 800);
+const CLASSIFIER_TEXT_LIMIT = Number(process.env.AUTO_NUDGE_CLASSIFIER_CHARS ?? 15000);
 
 // Classifier prompt. Tuned so "done" requires an explicit end-of-conversation
 // signal, and any hint of remaining or interrupted work counts as not done.
 const CLASSIFIER_INSTRUCTIONS =
   "Is this AI agent completely finished with its tasks, such that it cannot continue without new human input?";
 const CLASSIFIER_TRUE_CRITERIA =
-  "It asks the user a question, requests confirmation, approval, or a choice, or reports all work as finished in a final summary. No pending or upcoming actions are described.";
+  "The agent asks the user a question, requests confirmation, requests approval, requests a choice, or reports all work as finished in a final summary.";
 const CLASSIFIER_FALSE_CRITERIA =
-  "It leaves work unfinished: describes ongoing or interrupted activity (e.g. 'was in the middle of', cut-off sentences, trailing ellipsis), states upcoming steps ('next I will', 'then I'll'), lists remaining tasks, or stops without a clear final summary.";
+  "The agent leaves work unfinished: describes ongoing or interrupted activity (e.g. 'was in the middle of', cut-off sentences, trailing ellipsis), states upcoming steps ('next I will', 'then I'll'), lists remaining tasks, or stops without a clear final summary.";
 
 // ---------------------------------------------------------------------------
 // Extension state

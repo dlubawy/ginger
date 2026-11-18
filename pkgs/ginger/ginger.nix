@@ -7,7 +7,7 @@
 let
   inherit (pkgs) writeShellApplication;
 
-  version = "0.0.2";
+  version = "0.0.3";
   piHome = (import ./pi.nix { inherit pkgs version; });
   gondolinImage = (
     import ./gondolin-image {
