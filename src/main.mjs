@@ -25,13 +25,14 @@ import {
   IMAGE_TAR,
   SDK_PATH,
   VERSION,
+  VM_IMAGE,
   cacheDir,
   checkpointDir,
   fail,
   logDir,
   sdk,
 } from "./config.mjs";
-import { ensureContainerImage, ensureVmImage, removeImages } from "./images.mjs";
+import { ensureContainerImage, ensureVmImage, removeAllImages, removeImages } from "./images.mjs";
 import {
   ClientLease,
   activeLifecycleOp,
@@ -177,7 +178,8 @@ Options:
     --ssh-listen HOST          Local listen host (default: 127.0.0.1)
 
   Misc:
-    --rmi                      Remove the container and VM images when done
+    --rmi [all]                Remove the container and VM images when done
+                               (with all: every ginger version's images)
     -y, --yes                  Skip confirmation prompts (rm)
     -h, --help                 Show this help
 
@@ -275,7 +277,15 @@ function parseArgs(argv) {
     } else if (arg === "--pi") {
       opts.pi = true;
     } else if (arg === "--rmi") {
-      opts.rmi = true;
+      const next = argv[i + 1];
+      if (next === "all") {
+        opts.rmi = "all";
+        i++;
+      } else {
+        opts.rmi = true;
+      }
+    } else if (arg === "--rmi=all") {
+      opts.rmi = "all";
     } else if (arg === "--session") {
       opts.session = needValue(argv, i++, arg);
     } else if (arg === "--cwd") {
@@ -430,13 +440,19 @@ async function commandList(opts) {
   let checkpoints = listCheckpoints();
   if (wsPath) checkpoints = checkpoints.filter((m) => parseLabel(m.label).ws === wsPath);
 
+  // Mark entries written by a DIFFERENT ginger version so mixed-version state
+  // is visible instead of silently foreign. They remain fully manageable —
+  // ls/rm/stop are version-agnostic; only resuming a cross-version snapshot
+  // is refused, with an explanation.
+  const versionTag = (v) => (v && v !== VERSION ? `  [v${v}]` : "");
+
   console.log(`Sessions (${sessions.length}):`);
   if (sessions.length === 0) console.log("  (none)");
   else
     printTable(
       ["NAME", "ID", "AGE", "LABEL"],
       sessions.map((s) => [
-        targetTitle("session", s),
+        targetTitle("session", s) + versionTag(parseLabel(s.label).v),
         s.id,
         formatAge(s.createdAt),
         formatLabel(s.label),
@@ -449,7 +465,7 @@ async function commandList(opts) {
     printTable(
       ["NAME", "CREATED", "SIZE", "IMAGE"],
       checkpoints.map((m) => [
-        targetTitle("checkpoint", m),
+        targetTitle("checkpoint", m) + versionTag(m.version ?? parseLabel(m.label).v),
         new Date(m.createdAt).toLocaleString(),
         formatSize(fs.statSync(m.path, { throwIfNoEntry: false })?.size),
         path.basename(m.path),
@@ -636,6 +652,19 @@ async function main() {
       session = choice.target;
     } else {
       const checkpoint = choice.type === "checkpoint" ? choice.target : null;
+      // A snapshot is only resumable on the image it was built on: the qcow
+      // contains a frozen guest rootfs, and resuming it under a different
+      // ginger image would mix versions. v3 sidecars record the image; older
+      // ones derive it from the label's version (exact unless a custom
+      // GONDOLIN_DEFAULT_IMAGE was in effect when they were taken).
+      if (checkpoint) {
+        const cv = parseLabel(checkpoint.label ?? "").v;
+        const snapImage = checkpoint.image ?? (cv ? `ginger-env:${cv}` : null);
+        if (snapImage && snapImage !== VM_IMAGE)
+          fail(
+            `snapshot ${checkpoint.name} was built on image ${snapImage}; this ginger uses ${VM_IMAGE} — remove it (ginger rm) or run the matching ginger version`,
+          );
+      }
       // Resume with the exact spec the checkpoint was taken from so the VM
       // is configured identically (workspace mount, cwd, env, tcp, listen).
       // The SDK's VmCheckpoint.load() does not restore base options, so
@@ -731,7 +760,8 @@ async function main() {
     }
   }
 
-  if (opts.rmi) await removeImages();
+  if (opts.rmi === "all") await removeAllImages();
+  else if (opts.rmi) await removeImages();
 
   process.exit(code);
 }

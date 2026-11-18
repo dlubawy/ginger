@@ -34,14 +34,24 @@ in the snapshot's spec; VM options coming from the `ginger` key of pi's
 settings — an untrusted project's `.pi/settings.json` ginger config being
 dropped by pi's merge (no ingress, no project env) while GLOBAL ginger
 settings still apply, with a warning, and the same checkout trusted applying
-it; and the lifecycle-marker protocol itself (visible to
-other pids, ignored for its own pid, expires when unrefreshed).
+it; version pinning — a matching installed-config sentinel is transparent,
+while a mismatch disables the extension fail-closed (no VM created; tool
+calls reject with the explanation instead of falling back to pi's host
+built-ins; `!` bash returns a full error result so pi never runs its default
+host bash; `/ginger` reports it), and a VM left running by a pre-mismatch
+session is background-snapshotted and closed rather than orphaned;
+snapshot/image binding — resuming a snapshot built on another ginger image
+is skipped with an announcement (fresh start, old qcow + sidecar kept on
+disk) while matching images (explicit sidecar field or derived from the
+label's version) resume as usual, and `GINGER_PI_SNAPSHOT` seeding with a
+mismatched image refuses loudly; and the lifecycle-marker protocol itself
+(visible to other pids, ignored for its own pid, expires when unrefreshed).
 
 ```sh
 # PI_SDK_DIR is optional; when set, the extension runs from a temp tree with
 # a node_modules symlink to it (needed for nix store copies). Without it the
 # extension is imported in place and needs local module resolution.
-PI_SDK_DIR=/path/to/pi-monorepo node pkgs/ginger/tests/pi-extension.test.mjs
+PI_SDK_DIR=/path/to/pi-monorepo node tests/pi-extension.test.mjs
 ```
 
 The stub deliberately models SDK output-mode semantics: in `stdout: "pipe"`
@@ -60,7 +70,7 @@ ginger guest. Without KVM it uses TCG — slower, but fine for this size.
 ```sh
 GONDOLIN_SDK=/path/to/@gondolin/host/dist/src/index.js \
   QEMU_BIN_DIR=/path/to/qemu/bin \
-  node pkgs/ginger/tests/real-vm.test.mjs
+  node tests/real-vm.test.mjs
 ```
 
 From inside a ginger guest (nested VM), for example:
@@ -68,7 +78,7 @@ From inside a ginger guest (nested VM), for example:
 ```sh
 GONDOLIN_SDK=$(ls -d /nix/store/*-gondolin-*/lib/node_modules/@gondolin/host/dist/src/index.js | head -1) \
   QEMU_BIN_DIR=$(ls -d /nix/store/*-qemu-*/bin | head -1) \
-  node pkgs/ginger/tests/real-vm.test.mjs
+  node tests/real-vm.test.mjs
 ```
 
 ## Flake checks

@@ -25,9 +25,14 @@
  *     a session recorded in another checkout mounts that checkout. When a
  *     snapshot exists for the tree, its spec's recorded workspace wins over
  *     the current cwd instead.
- *   - The session label carries pi=<root pi session id>, where the root is
- *     the top of this session's fork tree (SessionHeader.parentSession links
- *     are paths; the extension walks them to the root). No custom name= is
+ *   - The session label carries v=<ginger version> and pi=<root pi session id>,
+ *     where the root is the top of this session's fork tree
+ *     (SessionHeader.parentSession links are paths; the extension walks them
+ *     to the root). The version is DATA, not identity: ginger's listing,
+ *     matching and GC liveness key off the label head (`ginger`), so resources
+ *     created by another ginger version stay visible, manageable and protected
+ *     (legacy `ginger:<version>?…` labels still parse; new ones are
+ *     `ginger?v=…&ws=…&pi=…`). No custom name= is
  *     stored — `ginger ls` derives the display title from the label's own
  *     pi= and ws= parts (derivedPiName: `pi:root:<id> -- <workspace>`), so
  *     the label doesn't duplicate information it already carries. A ginger
@@ -107,6 +112,35 @@
  *     environment when `direnv` is enabled (captured once at VM start;
  *     re-evaluated on the next VM start, e.g. via /reload).
  *
+ * Version pinning (fail-closed):
+ *   - The installed config tree records its ginger version in a sentinel
+ *     (<agent dir>/.ginger-version, written by pi-ginger.sh). At load the
+ *     extension compares it with the version of the ginger CLI on PATH
+ *     (`ginger env`). On ANY mismatch the extension disables itself rather
+ *     than running untested code against a different ginger: no VM is ever
+ *     started, and — crucially — the tools do NOT fall back to pi's
+ *     built-ins (which would run on the HOST): the seven tool names are
+ *     still registered (extension tools shadow same-named built-ins) but
+ *     every call fails with the mismatch message, and `!`/`!!` bash returns
+ *     an error result instead of executing. A VM left running by a
+ *     pre-mismatch session is snapshotted in the background (or closed when
+ *     its session has no JSONL) so nothing is orphaned. A missing sentinel
+ *     (hand-installed config) warns once and proceeds — there is nothing to
+ *     compare against.
+ *   - Snapshots are bound to their image. Each snapshot sidecar records the
+ *     ginger version and VM image it was built on (older snapshots fall back
+ *     to the label's v=). Resuming a snapshot whose image differs from this
+ *     ginger's is skipped with a warning in favor of a fresh start — the qcow
+ *     contains a frozen guest rootfs, and mixing it with a new image would mix
+ *     versions inside the guest. The old snapshot stays on disk (visible in
+ *     `ginger ls` tagged [v<version>], removable with `ginger rm`), so
+ *     downgrading back still works. GINGER_PI_SNAPSHOT seeding is explicit,
+ *     so a mismatch there refuses loudly instead of silently starting fresh.
+ *   - Stale-snapshot trimming (one snapshot per tree) only ever removes
+ *     snapshots from THIS ginger version: another version's snapshot of the
+ *     same tree is not redundant — it is the only recorded state for its
+ *     image.
+ *
  * Environment:
  *   - GINGER_PI_SNAPSHOT  Start this pi session's VM from an existing ginger
  *     snapshot instead of its own latest one. Value is a snapshot name (as
@@ -122,7 +156,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   type BashOperations,
@@ -228,12 +262,20 @@ interface GingerEnvInfo {
 interface GingerSpecModule {
   buildSpec(opts: Record<string, unknown>): Promise<Record<string, any>>;
   makeVmOptions(spec: Record<string, any>): Record<string, any>;
-  makeLabel(parts: { ws?: string | null; name?: string | null; pi?: string | null }): string;
+  makeLabel(parts: {
+    ws?: string | null;
+    name?: string | null;
+    pi?: string | null;
+    v?: string | null;
+  }): string;
   parseLabel(label: string): {
     ws: string | null;
     name: string | null;
     pi: string | null;
+    v: string | null;
   };
+  /** The VM image ref this ginger version boots (ginger-env:<v> or override). */
+  currentVmImage(): string;
 }
 
 interface GingerCheckpointMeta {
@@ -242,6 +284,10 @@ interface GingerCheckpointMeta {
   label?: string;
   spec?: Record<string, any>;
   createdAt: string;
+  /** ginger version that wrote the snapshot (v3 sidecars). */
+  version?: string;
+  /** VM image ref the snapshot was built on (v3 sidecars). */
+  image?: string;
 }
 
 interface GingerCheckpointsModule {
@@ -423,6 +469,85 @@ async function doLoadGinger(): Promise<GingerModules | null> {
   } finally {
     if (!hadVersion) delete process.env.GINGER_VERSION;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Version pinning (fail-closed)
+//
+// The installed config tree (this file + skills/prompts) is one ginger
+// version; the CLI on PATH (whose modules we import) can be another — e.g.
+// after a nix update where the pi start prompt to refresh the config was
+// declined. Running mismatched pairs is untested in BOTH directions (old
+// extension code against new modules, and vice versa), so instead of hoping
+// the APIs still line up the extension disables itself: no VM starts, and
+// the tools refuse every call rather than falling back to pi's built-ins
+// (which would run on the host — exactly what this extension exists to
+// prevent).
+// ---------------------------------------------------------------------------
+
+/**
+ * The ginger version of the INSTALLED config tree, from the sentinel that
+ * pi-ginger.sh writes next to the agent dir. GINGER_PI_SENTINEL overrides
+ * the path (tests; also lets a hand-installed config point at its own
+ * record). Null when absent — nothing to compare against.
+ */
+export function readInstalledVersion(): string | null {
+  const file =
+    process.env.GINGER_PI_SENTINEL?.trim() ||
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".ginger-version");
+  try {
+    return fs.readFileSync(file, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Non-null (with a user-facing message) when the installed config version
+ * and the ginger CLI on PATH disagree. Computed live on every call — one
+ * sentinel file read plus an already-cached module load — so the answer
+ * always reflects what is actually on disk: if the user fixes the mismatch
+ * mid-process (re-runs the installer), tools work again without a restart.
+ */
+export async function disabledReason(): Promise<string | null> {
+  const installed = readInstalledVersion();
+  if (installed === null) return null; // unknown — nothing to compare
+  const g = await loadGinger();
+  // envInfo is null in GINGER_SRC dev mode; there the loaded modules'
+  // version is the GINGER_VERSION they were imported with.
+  const cli = g?.envInfo?.version ?? process.env.GINGER_VERSION ?? null;
+  if (!cli) return null; // no CLI at all — "ginger not found" covers it
+  if (installed === cli) return null;
+  return (
+    `Ginger is DISABLED: the installed pi config is ginger ${installed}, ` +
+    `but the ginger on PATH is ${cli}. Tool calls will not run — there is no ` +
+    `host fallback. Make the two match (accept the config-update prompt at pi ` +
+    `start, or update nix) and restart pi.`
+  );
+}
+
+/** True once per process when the sentinel is missing but a CLI exists. */
+let warnedMissingSentinel = false;
+export function missingSentinelWarning(): string | null {
+  if (warnedMissingSentinel) return null;
+  if (readInstalledVersion() !== null) return null;
+  warnedMissingSentinel = true;
+  return (
+    "Ginger: no .ginger-version sentinel next to the installed extension — " +
+    "version pinning is off (hand-installed config?)"
+  );
+}
+
+/**
+ * The VM image a snapshot was built on: the sidecar's image field (v3
+ * sidecars), else derived from its recorded version — exact unless the
+ * snapshot was taken with a custom GONDOLIN_DEFAULT_IMAGE, which pre-v3
+ * sidecars don't record. Null when neither is known.
+ */
+function snapshotImageOf(g: GingerModules, meta: GingerCheckpointMeta): string | null {
+  if (typeof meta.image === "string" && meta.image) return meta.image;
+  const v = meta.version ?? g.spec.parseLabel(meta.label ?? "").v;
+  return v ? `ginger-env:${v}` : null;
 }
 
 /** Resolve a GINGER_PI_SNAPSHOT value to checkpoint metadata. */
@@ -1091,10 +1216,17 @@ export default function (pi: ExtensionAPI) {
     keepPath: string,
     excludeSessionId?: string,
   ): Promise<number> {
+    // Only snapshots from THIS ginger version are redundant with the new
+    // one: an older/newer version's snapshot is the only recorded state for
+    // its image (the downgrade path), so it must survive this tree's later
+    // snapshots. Unknown on either side → keep (conservative).
+    const curV = g.envInfo?.version ?? process.env.GINGER_VERSION ?? null;
     const stale = await gingerCall(() =>
-      g.checkpoints
-        .listCheckpoints()
-        .filter((m) => g.spec.parseLabel(m.label ?? "").pi === piId && m.path !== keepPath),
+      g.checkpoints.listCheckpoints().filter((m) => {
+        if (g.spec.parseLabel(m.label ?? "").pi !== piId || m.path === keepPath) return false;
+        const v = g.spec.parseLabel(m.label ?? "").v;
+        return curV === null || v == null || v === curV;
+      }),
     );
     if (stale.length === 0) return 0;
     let protectedPaths: Set<string>;
@@ -1192,6 +1324,14 @@ export default function (pi: ExtensionAPI) {
     const seed = process.env.GINGER_PI_SNAPSHOT?.trim();
     if (seed) {
       const meta = await gingerCall(() => resolveSnapshot(g, seed));
+      // Seeding is an explicit choice: a snapshot from another image is an
+      // error here, not a silent fresh start.
+      const seedImage = snapshotImageOf(g, meta);
+      if (seedImage && seedImage !== g.spec.currentVmImage())
+        throw new Error(
+          `snapshot ${meta.name} was built on image ${seedImage}; this ginger uses ` +
+            `${g.spec.currentVmImage()} — refusing to seed a mismatched VM`,
+        );
       spec = meta.spec
         ? { ...meta.spec }
         : await gingerCall(() =>
@@ -1205,10 +1345,27 @@ export default function (pi: ExtensionAPI) {
       const mine = await gingerCall(() =>
         g.checkpoints.listCheckpoints().filter((m) => g.spec.parseLabel(m.label ?? "").pi === piId),
       );
-      if (mine.length > 0) {
+      // A snapshot is only resumable on the image it was built on: the qcow
+      // contains a frozen guest rootfs (image-baked /etc/pi/agent, init,
+      // …), and resuming it under a different ginger image would mix
+      // versions. Honest default: skip to a fresh start and say so — the old
+      // snapshot stays on disk (visible in `ginger ls`, deletable with
+      // `ginger rm`), which also keeps downgrades working.
+      let cp = mine.length > 0 ? mine[0] : null;
+      if (cp) {
+        const snapImage = snapshotImageOf(g, cp);
+        const currentImage = g.spec.currentVmImage();
+        if (snapImage && snapImage !== currentImage) {
+          ui?.notify(
+            `Ginger: skipping snapshot ${path.basename(cp.path)} — built on image ${snapImage}, but this ginger uses ${currentImage}. Starting fresh; the snapshot is kept (ginger ls / rm).`,
+            "warning",
+          );
+          cp = null;
+        }
+      }
+      if (cp) {
         // listCheckpoints() is newest-first. The recorded label/spec are the
         // source of truth (workspace, env, name= if the user ever set one).
-        const cp = mine[0];
         spec = cp.spec
           ? { ...cp.spec, checkpoint: cp.path }
           : await gingerCall(() =>
@@ -1232,7 +1389,10 @@ export default function (pi: ExtensionAPI) {
             return 0;
           });
           if (removed > 0)
-            ui?.notify(`Ginger: removed ${removed} older snapshot(s) for this session tree`, "info");
+            ui?.notify(
+              `Ginger: removed ${removed} older snapshot(s) for this session tree`,
+              "info",
+            );
         }
       } else {
         spec = await gingerCall(() =>
@@ -1392,6 +1552,12 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function ensureVm(ctx?: ExtensionContext): Promise<GondolinVM> {
+    // Backstop for the session_start check: whatever path reaches here
+    // (tool, `!` bash, /ginger, prompt rewrite), a version mismatch means
+    // NO VM — and the thrown message is what the tool call surfaces. It
+    // must never resolve to pi's built-in host tools.
+    const disabled = await disabledReason();
+    if (disabled) throw new Error(disabled);
     if (vm) return vm;
     if (!vmStarting) {
       vmStarting = startVm(ctx).finally(() => {
@@ -1452,8 +1618,7 @@ export default function (pi: ExtensionAPI) {
       // marker check is best effort — proceed
     }
     const startedAt = Date.now();
-    if (blocking)
-      ui.setStatus("ginger", ui.theme.fg("muted", "Ginger: snapshotting"));
+    if (blocking) ui.setStatus("ginger", ui.theme.fg("muted", "Ginger: snapshotting"));
     try {
       // Claim the session BEFORE touching the VM. During the slow rebase the
       // VM is already gone from every registry, so without this marker a
@@ -1483,6 +1648,11 @@ export default function (pi: ExtensionAPI) {
           label: activeSpec.label,
           spec: activeSpec,
           createdAt: new Date().toISOString(),
+          // Version/image binding (v3 sidecars): resume policy refuses to
+          // boot a snapshot under a different ginger image, and `ginger ls`
+          // marks entries from other versions.
+          version: g.envInfo?.version ?? process.env.GINGER_VERSION ?? "dev",
+          image: g.spec.currentVmImage(),
         });
         // One snapshot per session tree, in BOTH modes: the active VM is
         // already stopped after checkpoint(), so its old backing file no
@@ -1561,6 +1731,49 @@ export default function (pi: ExtensionAPI) {
     const ui = ctx.ui;
     shuttingDown = false;
 
+    // Fail-closed version pinning: on a mismatch between the installed
+    // config and the ginger CLI, nothing may run — and a VM left behind by
+    // a pre-mismatch session must not be orphaned either. Snapshot it in the
+    // background when its tree has a JSONL transcript (the same gate the
+    // shutdown path uses), otherwise just close it.
+    const disabled = await disabledReason();
+    if (disabled) {
+      const prevFile = event.previousSessionFile;
+      const hasJsonl =
+        typeof prevFile === "string" && prevFile.endsWith(".jsonl") && fs.existsSync(prevFile);
+      if (vm) {
+        if (hasJsonl) releaseVmToBackgroundSnapshot(ui);
+        else {
+          const oldVm = vm;
+          clearVmState();
+          try {
+            await oldVm.close();
+          } catch {
+            // best effort
+          }
+        }
+      } else if (vmStarting) {
+        // In-flight boot: abort it the way shutdown does — the generation
+        // guard makes startVm close its own VM when it completes.
+        generation++;
+        shuttingDown = true;
+        vmStarting.catch(() => {});
+        vmStarting = undefined;
+      }
+      ui.notify(disabled, "error");
+      return;
+    }
+    // Missing sentinel (hand-installed config): one warning per process, and
+    // only when a real CLI exists to have compared against (dev mode via
+    // GINGER_SRC has no wrapper env — nothing meaningful to pin).
+    {
+      const g = await loadGinger();
+      if (g?.envInfo) {
+        const w = missingSentinelWarning();
+        if (w) ui.notify(w, "warning");
+      }
+    }
+
     // A /resume may land while the outgoing session's VM is still booting
     // (vmStarting set, vm unset). Let it finish first so the same-tree /
     // different-tree decision below has the full state to work with.
@@ -1596,11 +1809,7 @@ export default function (pi: ExtensionAPI) {
           // we left (so shutdown had no state to judge). Gate on the
           // outgoing session's JSONL like the shutdown path does.
           const prev = event.previousSessionFile;
-          if (
-            typeof prev === "string" &&
-            prev.endsWith(".jsonl") &&
-            fs.existsSync(prev)
-          ) {
+          if (typeof prev === "string" && prev.endsWith(".jsonl") && fs.existsSync(prev)) {
             releaseVmToBackgroundSnapshot(ui);
           } else {
             const oldVm = vm;
@@ -1685,8 +1894,7 @@ export default function (pi: ExtensionAPI) {
         typeof event.targetSessionFile === "string"
           ? rootIdForSessionFile(event.targetSessionFile)
           : null;
-      const curRoot =
-        vmPiId ?? findRootSessionId(ctx, String(ctx.sessionManager.getSessionId()));
+      const curRoot = vmPiId ?? findRootSessionId(ctx, String(ctx.sessionManager.getSessionId()));
       sameTreeResume = destRoot !== null && destRoot === curRoot;
     }
 
@@ -1746,14 +1954,18 @@ export default function (pi: ExtensionAPI) {
     // the user keep working in the new session.
     if (reason === "new" || reason === "resume") {
       ui.notify("Ginger: snapshotting in the background — you can keep working", "info");
-      void snapshotVm({ ui, vm: activeVm, spec: activeSpec, piId: activePiId, blocking: false }).catch(
-        (err) => {
-          ui.notify(
-            `Ginger background snapshot failed: ${err instanceof Error ? err.message : String(err)}`,
-            "error",
-          );
-        },
-      );
+      void snapshotVm({
+        ui,
+        vm: activeVm,
+        spec: activeSpec,
+        piId: activePiId,
+        blocking: false,
+      }).catch((err) => {
+        ui.notify(
+          `Ginger background snapshot failed: ${err instanceof Error ? err.message : String(err)}`,
+          "error",
+        );
+      });
     } else {
       await snapshotVm({ ui, vm: activeVm, spec: activeSpec, piId: activePiId, blocking: true });
     }
@@ -1763,6 +1975,11 @@ export default function (pi: ExtensionAPI) {
     description: "Show Ginger VM status",
     handler: async (_args, ctx) => {
       const ui = ctx.ui; // capture while active (ensureVm can take minutes)
+      const disabled = await disabledReason();
+      if (disabled) {
+        ui.notify(disabled, "error");
+        return;
+      }
       const activeVm = await ensureVm(ctx);
       ui.notify(
         [
@@ -1787,7 +2004,6 @@ export default function (pi: ExtensionAPI) {
       );
     },
   });
-
 
   pi.registerTool({
     ...localRead,
@@ -1868,6 +2084,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("user_bash", async (_event, ctx) => {
+    // A handler that returns nothing lets pi run its DEFAULT — host bash.
+    // When disabled we must return a full replacement result instead, so
+    // `!`/`!!` fail loudly rather than execute on the host.
+    const disabled = await disabledReason();
+    if (disabled)
+      return {
+        result: { output: `${disabled}\n`, exitCode: 1, cancelled: false, truncated: false },
+      };
     const activeVm = await ensureVm(ctx);
     return {
       operations: createGondolinBashOps(activeVm, guestPaths(), shellPath, {

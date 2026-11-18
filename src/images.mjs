@@ -55,3 +55,51 @@ export async function removeImages() {
   sdk.removeImage(VM_IMAGE);
   step.succeed(`removed ${CONTAINER_IMAGE} and ${VM_IMAGE}`);
 }
+
+/**
+ * Remove images from ALL ginger versions, not just the current one (--rmi
+ * all): the container images `localhost/gondolin-image:*` plus the SDK VM
+ * image refs `ginger-env:*`. Old-version images live outside the nix store,
+ * so without this every previous generation's images would be retained
+ * forever. Refs still backing a running session fail loudly — stop those
+ * sessions first.
+ */
+export async function removeAllImages() {
+  const step = new Step("Removing all ginger images");
+  const list = await run("podman", ["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"], {
+    capture: true,
+    quiet: true,
+  });
+  if (list.code === 0) {
+    const refs = list.out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((ref) => ref.startsWith("localhost/gondolin-image:"));
+    for (const ref of refs) {
+      const rm = await run("podman", ["image", "rm", ref], { capture: true, quiet: true });
+      if (rm.code !== 0) {
+        step.fail(
+          `failed to remove ${ref} (${(rm.out ?? "").trim().split("\n").pop() || "unknown error"}) — is a session still running on it?`,
+        );
+        process.exit(1);
+      }
+    }
+  } else {
+    step.note("no podman images listed (podman unavailable?)");
+  }
+
+  for (const r of (sdk.listImageRefs() ?? []).filter((r) =>
+    String(r.reference).startsWith("ginger-env:"),
+  )) {
+    step.note(`removing ${r.reference}`);
+    try {
+      sdk.removeImage(r.reference);
+    } catch (err) {
+      step.fail(
+        `failed to remove VM image ${r.reference} (${err?.message ?? err}) — is a session still running on it?`,
+      );
+      process.exit(1);
+    }
+  }
+  step.succeed();
+}

@@ -188,7 +188,7 @@
         # darwin (a null value would make `nix flake check` fail). Run it
         # manually elsewhere:
         #   GONDOLIN_SDK=<host SDK entry> QEMU_BIN_DIR=<qemu bin dir> \
-        #     node pkgs/ginger/tests/real-vm.test.mjs
+        #     node tests/real-vm.test.mjs
         #
         # The guest downloads its assets over TLS at VM.create time. When
         # the build host routes traffic through a TLS-intercepting proxy,

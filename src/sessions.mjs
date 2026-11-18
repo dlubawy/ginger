@@ -7,8 +7,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { LABEL_PREFIX, cacheDir, fail, sdk } from "./config.mjs";
-import { derivedPiName, parseLabel } from "./spec.mjs";
+import { cacheDir, fail, sdk } from "./config.mjs";
+import { derivedPiName, isGingerLabel, parseLabel } from "./spec.mjs";
 import { isAlive } from "./ui.mjs";
 
 const LEASE_HEARTBEAT_MS = 5_000;
@@ -265,7 +265,11 @@ export function activeLifecycleOp(sessionId) {
 export async function gingerSessions() {
   await sdk.gcSessions().catch(() => {});
   const sessions = await sdk.listSessions();
-  return sessions.filter((s) => s.alive && (s.label ?? "").startsWith(LABEL_PREFIX));
+  // isGingerLabel matches v3 AND legacy labels: a session started by another
+  // ginger version is still live and must count as such — GC's live set comes
+  // from here, and a version-filtered list let it delete the spec dirs of
+  // running old-version VMs.
+  return sessions.filter((s) => s.alive && isGingerLabel(s.label));
 }
 
 /**

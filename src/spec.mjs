@@ -9,12 +9,25 @@ import { LABEL_PREFIX, VERSION, VM_IMAGE, fail, profilesDir, sdk } from "./confi
 import { paint } from "./ui.mjs";
 
 // ---------------------------------------------------------------------------
-// Labels — `<image>:<tag>?ws=<abs workspace>&name=<custom name>`
+// Labels — `ginger?v=<version>&ws=<abs workspace>&name=<custom name>`
 //
 // The query part uses RFC 3986 percent-encoding (via URLSearchParams), so
 // paths with spaces or '=' stay unambiguous. parseLabel also understands the
-// legacy colon form (`ginger:<ver>[:ws=<ws>][:name=<name>]`) so old sessions
-// and checkpoints keep working; everything new is written in v2.
+// legacy forms (`ginger:<ver>?…` and `ginger:<ver>[:ws=<ws>]…`, version in
+// the head) so old sessions and checkpoints keep working; everything new is
+// written in v3 — with the version as a parameter rather than baked into
+// the prefix, because a version-scoped prefix orphans every resource from
+// other versions (invisible to ls/rm/GC liveness after an upgrade).
+// ---------------------------------------------------------------------------
+
+/**
+ * The VM image ref this ginger version boots (ginger-env:<VERSION>, or the
+ * GONDOLIN_DEFAULT_IMAGE override). Snapshot sidecars record it so resume
+ * can refuse to boot a snapshot under a different image.
+ */
+export function currentVmImage() {
+  return VM_IMAGE;
+}
 // ---------------------------------------------------------------------------
 
 /**
@@ -60,8 +73,24 @@ export function sanitizeName(name) {
   return cleaned.slice(0, 64);
 }
 
-export function makeLabel({ ws = null, name = null, pi = null } = {}) {
+/**
+ * True for any ginger label — v3 (`ginger?…`, version in the v= parameter)
+ * or legacy (`ginger:<version>?…` / `ginger:<version>:…`, version in the
+ * head). Used as the "is this ours" filter so one install lists and manages
+ * resources from other ginger versions instead of orphaning them.
+ */
+
+export function isGingerLabel(label) {
+  const head = String(label ?? "").split("?")[0];
+  return head === LABEL_PREFIX || head.startsWith(`${LABEL_PREFIX}:`);
+}
+
+export function makeLabel({ ws = null, name = null, pi = null, v = VERSION } = {}) {
   const params = new URLSearchParams();
+  // v= records which ginger version wrote the label so other versions can
+  // display and policy-check it (e.g. refusing to resume a snapshot built on
+  // an older image).
+  if (v) params.set("v", String(v));
   if (ws) params.set("ws", ws);
   if (name) params.set("name", sanitizeName(name));
   // pi= links the session to a pi agent session id. Only set for sessions
@@ -71,16 +100,21 @@ export function makeLabel({ ws = null, name = null, pi = null } = {}) {
   return q ? `${LABEL_PREFIX}?${q}` : LABEL_PREFIX;
 }
 
-/** Parse the ws=/name=/pi= parts of a ginger label (v2 or legacy form). */
+/** Parse the v=/ws=/name=/pi= parts of a ginger label (v3 or legacy form). */
 export function parseLabel(label) {
-  const out = { ws: null, name: null, pi: null };
+  const out = { ws: null, name: null, pi: null, v: null };
   const s = String(label ?? "");
+  // Legacy labels carry the version in the head (ginger:0.0.1…); v3 labels
+  // carry it as a v= parameter.
+  const parts = s.split(":");
+  if (parts[0] === LABEL_PREFIX && parts.length > 1) out.v = parts[1].split("?")[0];
   const qIdx = s.indexOf("?");
   if (qIdx >= 0) {
     for (const [k, v] of new URLSearchParams(s.slice(qIdx + 1))) {
       if (k === "ws") out.ws = v;
       else if (k === "name") out.name = v;
       else if (k === "pi") out.pi = v;
+      else if (k === "v") out.v = v;
     }
   } else {
     for (const part of s.split(":").slice(1)) {
@@ -95,7 +129,7 @@ export function parseLabel(label) {
 /** Replace the name= part of a label, or drop it when name is null. */
 export function setLabelName(label, name) {
   const cur = parseLabel(label);
-  return makeLabel({ ws: cur.ws, name, pi: cur.pi });
+  return makeLabel({ ws: cur.ws, name, pi: cur.pi, v: cur.v });
 }
 
 /**
@@ -367,9 +401,7 @@ export function parseProfileObject(raw, source) {
     fail(`${source} must be a JSON object`);
   for (const key of Object.keys(raw))
     if (!SPEC_FILE_KEYS.has(key))
-      fail(
-        `unknown key in ${source}: ${key} (expected one of: ${[...SPEC_FILE_KEYS].join(", ")})`,
-      );
+      fail(`unknown key in ${source}: ${key} (expected one of: ${[...SPEC_FILE_KEYS].join(", ")})`);
   return raw;
 }
 
@@ -418,7 +450,7 @@ export async function buildSpec(opts) {
   if (opts.profile) {
     file = loadProfileFile(profilePath(opts.profile));
   } else if (opts.profileContent !== undefined && opts.profileContent !== null) {
-    file = parseProfileObject(opts.profileContent, "pi settings \"ginger\"");
+    file = parseProfileObject(opts.profileContent, 'pi settings "ginger"');
   }
   const wsName = wsPath ? path.basename(wsPath) : null;
   let cwd = opts.cwd ?? (typeof file.cwd === "string" ? file.cwd : null);

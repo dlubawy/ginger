@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { VERSION, checkpointDir, fail, logDir, sdk } from "./config.mjs";
+import { VERSION, VM_IMAGE, checkpointDir, fail, logDir, sdk } from "./config.mjs";
 import { makeVmOptions, parseListenSpec } from "./spec.mjs";
 import { Step, isAlive, run, tail, waitFor } from "./ui.mjs";
 import { writeCheckpointMeta } from "./checkpoints.mjs";
@@ -310,10 +310,7 @@ export async function snapshotSession(session, spec, snapLabel = null) {
           if (settled) return;
           const ok = await waitForCheckpoint(outPath, session.pid);
           if (ok) settle(resolve)({ path: outPath, name });
-          else
-            settle(reject)(
-              err ?? new Error("session closed before snapshot completed"),
-            );
+          else settle(reject)(err ?? new Error("session closed before snapshot completed"));
         },
       });
       client.send({ type: "snapshot", id: 1, path: outPath });
@@ -332,13 +329,20 @@ export async function snapshotSession(session, spec, snapLabel = null) {
     label,
     spec: { ...spec, label },
     createdAt: new Date().toISOString(),
+    // Version/image binding (v3 sidecars): resume policy refuses to boot a
+    // snapshot under a different ginger image, and `ginger ls` marks entries
+    // from other versions.
+    version: VERSION,
+    image: VM_IMAGE,
   };
   try {
     writeCheckpointMeta(meta);
   } catch (err) {
     // A qcow without its sidecar is an orphan that ginger ls reports — say
     // so explicitly instead of letting the failure look like a bad snapshot.
-    step.fail(`snapshot written but metadata failed (${err?.message ?? err}) — orphan at ${meta.path}`);
+    step.fail(
+      `snapshot written but metadata failed (${err?.message ?? err}) — orphan at ${meta.path}`,
+    );
     process.exit(1);
   }
   step.succeed(`snapshot saved: ${meta.path}`);

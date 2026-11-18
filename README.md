@@ -41,7 +41,7 @@ files, environment — lives in the guest.
 | The image | `pkgs/ginger/gondolin-image/` | An opinionated Alpine-based OCI image for coding agents: nix + direnv (devshell workflows), git, node, python, and `playwright-cli` with its dashboard served over ingress at VM boot. |
 | pi extension | `pi/extensions/ginger.ts` | Replaces pi's native tools with VM-backed ones; isolates the guest environment from the host; evaluates `.envrc` once at start; surfaces ingress URLs; snapshots per pi session. |
 | pi config + wrapper | `pkgs/ginger/pi.nix` | A nix-built `~/.pi/agent` config (extensions, skills, prompts, themes, models) and a `pi` host wrapper that keeps it up to date — merging into your existing agent dir, never deleting anything. |
-| Nix integration | `flake.nix`, `pkgs/default.nix` | Packages (`ginger`, `gondolin`, `playwright-cli`, `pi`), flake checks (see [tests](pkgs/ginger/tests/README.md)), and a dev shell. |
+| Nix integration | `flake.nix`, `pkgs/default.nix` | Packages (`ginger`, `gondolin`, `playwright-cli`, `pi`), flake checks (see [tests](tests/README.md)), and a dev shell. |
 
 ## Quick start
 
@@ -121,6 +121,17 @@ Inside `pi`, the ginger extension:
   tree's own (resuming its snapshot when one exists, so the guest workspace
   matches the resumed transcript). Snapshots happen on shutdown and only
   when the session actually has a transcript on disk.
+- **pins its own version, fail-closed.** The installed config records the
+  ginger version it was built from in a sentinel (`.ginger-version`, written
+  by the `pi` wrapper). At load the extension compares it with the version
+  of the ginger CLI on PATH; if they disagree — e.g. nix updated ginger but
+  the config-update prompt at pi start was declined — the extension disables
+  itself instead of running untested code across the boundary: no VM starts,
+  and because the tool names stay registered (shadowing pi's built-ins) every
+  call fails with an explanation rather than falling back to host tools. A VM
+  left running by a pre-mismatch session is snapshotted in the background (or
+  closed) so nothing is orphaned. A missing sentinel (hand-installed config)
+  warns once and proceeds.
 - reports state on demand: `/ginger` shows origin, cwd, ingress URL, and env
   capture status.
 - resolves pi config paths across the host/guest split. pi runs on the host,
@@ -135,6 +146,33 @@ Inside `pi`, the ginger extension:
 The image also boots `playwright-cli`'s dashboard as an idempotent daemon
 and routes it at `/` over ingress; manage the route with the in-guest
 `playwright-dashboard` helper (`add|remove|port|status`).
+
+### When ginger's version changes
+
+Ginger resources are **not** scoped to the version that created them — an
+upgrade (or downgrade) never orphans what the previous version left behind:
+
+- **Labels carry their version as data, not as identity.** New labels are
+  `ginger?v=<version>&ws=…&pi=…`; legacy `ginger:<version>?…` / colon forms
+  still parse. All listing, matching, and GC liveness use the version-
+  agnostic head, so a running session started by an older ginger is still
+  visible to (and protected from) the newer one's housekeeping.
+- **`ginger ls` marks foreign entries** with a `[v<version>]` tag — they are
+  fully manageable (`stop`, `rm`, `rename`) from any version.
+- **Snapshots remember their image.** Each snapshot sidecar records the ginger
+  version and VM image it was built on. Resuming a snapshot under a different
+  image is refused with an explanation (the CLI fails; the pi extension skips
+  to a fresh start and says so) — the qcow contains a frozen guest rootfs,
+  and mixing it with a new ginger image would mix versions inside the guest.
+  The old snapshot stays on disk, so downgrading back still works; deleting
+  it is up to you (`ginger rm`).
+- **Old-version images are yours to reclaim.** Container images
+  (`localhost/gondolin-image:*`) and VM image refs (`ginger-env:*`) live
+  outside the nix store; `--rmi` removes the current version's pair, and
+  `--rmi all` sweeps every ginger version's images (still-running sessions
+  fail loudly — stop them first).
+- **The pi extension pins itself** (see above) so a half-upgraded pair never
+  runs silently.
 
 ## Repository layout
 
@@ -158,7 +196,7 @@ nix develop                # dev shell (pre-commit tooling included)
 nix flake check            # pre-commit checks + pi-extension-check (all systems)
 ```
 
-Two end-to-end suites live in [`pkgs/ginger/tests/`](pkgs/ginger/tests/README.md):
+Two end-to-end suites live in [`tests/`](tests/README.md):
 
 - **`pi-extension-check`** — the real extension and real ginger source
   exercised against a faithful stub of the gondolin SDK. Hermetic, fast,
@@ -189,8 +227,19 @@ trufflehog, commitizen, …) via `prek`.
   trimmed to one snapshot whenever a new one lands — including background
   snapshots on session replacement — except files another live ginger
   session references as its qcow2 backing (unlinking those would corrupt the
-  VM running on them); leftovers are retried pre-boot on the tree's next
-  start.
+  VM running on them), and except snapshots from OTHER ginger versions, which
+  are not redundant with the new one: they are the only recorded state for
+  their image (the downgrade path). Leftovers are retried pre-boot on the
+  tree's next start.
+- **Version changes are structural, not compatibility matrices.** Rather than
+  maintaining semver compatibility between extension / CLI modules / VM image,
+  ginger makes mixed versions impossible or harmless: resources are visible
+  across versions (version is label data, `v=`, never the filter prefix),
+  GC liveness is version-agnostic (an old-version session's spec dir can't be
+  collected out from under it), snapshot resume is image-bound (refused with
+  an explanation rather than silently wrong), and the pi extension pins its
+  installed-config version against the CLI on PATH, failing closed — tools
+  refuse every call instead of falling back to host execution.
 - **Best-effort features, loud failures.** A failing owner feature (ingress,
   SSH, direnv) records an error in the session's `access.json` and notifies —
   it never sinks the VM.

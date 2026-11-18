@@ -53,6 +53,17 @@
 //   P. an UNTRUSTED project's ginger settings (.pi/settings.json) are
 //      dropped by pi's merge (no ingress, no project env) while GLOBAL
 //      ginger settings still apply, with a warning; trusted applies them
+//   Q. version pinning: installed-config sentinel vs CLI version — a match is
+//      transparent; a mismatch disables the extension FAIL-CLOSED (no VM,
+//      tool calls reject with the explanation instead of falling back to pi's
+//      host built-ins, `!` bash returns an error result, /ginger reports it);
+//      a VM left running by a pre-mismatch session is background-snapshotted
+//      and closed, not orphaned
+//   R. snapshot/image binding: resuming a snapshot built on another ginger
+//      image is skipped (with a warning) in favor of a fresh start — the old
+//      snapshot stays on disk; matching image (explicit or derived from the
+//      label's version) resumes as usual; GINGER_PI_SNAPSHOT seeding with a
+//      mismatched image refuses loudly
 
 import fs from "node:fs";
 import os from "node:os";
@@ -83,8 +94,12 @@ function mergeSettings(base, over) {
   for (const [k, v] of Object.entries(over)) {
     if (v === undefined) continue;
     const bothObjects =
-      v && typeof v === "object" && !Array.isArray(v) &&
-      out[k] && typeof out[k] === "object" && !Array.isArray(out[k]);
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      out[k] &&
+      typeof out[k] === "object" &&
+      !Array.isArray(out[k]);
     out[k] = bothObjects ? mergeSettings(out[k], v) : v;
   }
   return out;
@@ -484,7 +499,10 @@ async function runBash(pi, ctx, id) {
   fs.utimesSync(path.join(sdir, "spec.json"), old, old);
   const { gcSessionDirs } = await import(`${GINGER_SRC}/sessions.mjs`);
   gcSessionDirs([]);
-  assert.ok(fs.existsSync(path.join(sdir, "spec.json")), "session dir survives ginger GC mid-snapshot");
+  assert.ok(
+    fs.existsSync(path.join(sdir, "spec.json")),
+    "session dir survives ginger GC mid-snapshot",
+  );
 
   // Release the checkpoint; the background flow must finish on its own:
   // qcow + sidecar, marker released, VM closed.
@@ -493,9 +511,7 @@ async function runBash(pi, ctx, id) {
   const deadline = Date.now() + 5000;
   let metas = [];
   while (Date.now() < deadline) {
-    metas = fs.existsSync(cdir)
-      ? fs.readdirSync(cdir).filter((f) => f.endsWith(".json"))
-      : [];
+    metas = fs.existsSync(cdir) ? fs.readdirSync(cdir).filter((f) => f.endsWith(".json")) : [];
     if (metas.length > 0 && vm.closed) break;
     await new Promise((r) => setTimeout(r, 25));
   }
@@ -559,16 +575,21 @@ async function runBash(pi, ctx, id) {
   const callsBeforeK = { create: sdkStub.calls.create.length, resume: sdkStub.calls.resume.length };
   const fork2Pi = newExt();
   const { ctx: fork2Ctx } = mkCtx(fork2File, "child-2");
-  await newPi.handlers.session_shutdown(
-    { reason: "resume", targetSessionFile: fork2File },
-    newCtx,
-  );
+  await newPi.handlers.session_shutdown({ reason: "resume", targetSessionFile: fork2File }, newCtx);
   await fork2Pi.handlers.session_start(
     { reason: "resume", previousSessionFile: newFile },
     fork2Ctx,
   );
-  assert.equal(sdkStub.calls.resume.length, callsBeforeK.resume + 1, "tree member resumes the ROOT's snapshot");
-  assert.equal(sdkStub.calls.resume.at(-1).path, meta.path, "resumed from the newest root-1 snapshot");
+  assert.equal(
+    sdkStub.calls.resume.length,
+    callsBeforeK.resume + 1,
+    "tree member resumes the ROOT's snapshot",
+  );
+  assert.equal(
+    sdkStub.calls.resume.at(-1).path,
+    meta.path,
+    "resumed from the newest root-1 snapshot",
+  );
   assert.ok(!fs.existsSync(stalePath), "older tree snapshot removed pre-boot");
   assert.ok(!fs.existsSync(`${stalePath}.json`), "older tree snapshot's sidecar removed pre-boot");
 
@@ -596,10 +617,7 @@ async function runBash(pi, ctx, id) {
   const dFile = path.join(ROOT, "d-session.jsonl");
   fs.writeFileSync(dFile, JSON.stringify({ type: "session", id: "d-1" }) + "\n");
   const { ctx: dCtx } = mkCtx(dFile, "d-1");
-  await fork2Pi.handlers.session_shutdown(
-    { reason: "resume", targetSessionFile: dFile },
-    fork2Ctx,
-  );
+  await fork2Pi.handlers.session_shutdown({ reason: "resume", targetSessionFile: dFile }, fork2Ctx);
   const dPi = newExt();
   await dPi.handlers.session_start({ reason: "resume", previousSessionFile: fork2File }, dCtx);
   const k2dVm = sdkStub.vms.at(-1); // d-1's fresh VM (K3 waits on it below)
@@ -617,10 +635,7 @@ async function runBash(pi, ctx, id) {
   assert.equal(root1Metas().length, 1, "tree root-1 ends with exactly ONE snapshot");
   assert.notEqual(root1Metas()[0].path, meta.path, "the snapshot is the NEW one");
   assert.ok(!fs.existsSync(meta.path), "old backing file removed once the new snapshot landed");
-  assert.ok(
-    !fs.existsSync(`${meta.path}.json`),
-    "old backing file's sidecar removed with it",
-  );
+  assert.ok(!fs.existsSync(`${meta.path}.json`), "old backing file's sidecar removed with it");
 
   // K3. Protection: an older snapshot that ANOTHER live ginger session uses
   // as its qcow2 backing must survive the same cleanup — unlinking it would
@@ -645,10 +660,7 @@ async function runBash(pi, ctx, id) {
     child3File,
     JSON.stringify({ type: "session", id: "child-3", parentSession: rootFile }) + "\n",
   );
-  await dPi.handlers.session_shutdown(
-    { reason: "resume", targetSessionFile: child3File },
-    dCtx,
-  );
+  await dPi.handlers.session_shutdown({ reason: "resume", targetSessionFile: child3File }, dCtx);
   const k3Pi = newExt();
   const { ctx: k3Ctx, notifications: k3Notices } = mkCtx(child3File, "child-3");
   await k3Pi.handlers.session_start({ reason: "resume", previousSessionFile: dFile }, k3Ctx);
@@ -698,16 +710,18 @@ async function runBash(pi, ctx, id) {
   const callsBeforeL = { create: sdkStub.calls.create.length, resume: sdkStub.calls.resume.length };
   const rootPi2 = newExt();
   const { ctx: rootCtxL, notifications: rootNoticesL } = mkCtx(lRootFile, "l-root");
-  await ePi.handlers.session_shutdown(
-    { reason: "resume", targetSessionFile: lRootFile },
-    eCtx,
+  await ePi.handlers.session_shutdown({ reason: "resume", targetSessionFile: lRootFile }, eCtx);
+  await rootPi2.handlers.session_start({ reason: "resume", previousSessionFile: eFile }, rootCtxL);
+  assert.equal(
+    sdkStub.calls.create.length,
+    callsBeforeL.create,
+    "same-tree resume starts no new VM",
   );
-  await rootPi2.handlers.session_start(
-    { reason: "resume", previousSessionFile: eFile },
-    rootCtxL,
+  assert.equal(
+    sdkStub.calls.resume.length,
+    callsBeforeL.resume,
+    "same-tree resume takes no snapshot path",
   );
-  assert.equal(sdkStub.calls.create.length, callsBeforeL.create, "same-tree resume starts no new VM");
-  assert.equal(sdkStub.calls.resume.length, callsBeforeL.resume, "same-tree resume takes no snapshot path");
   assert.ok(
     rootNoticesL.some(([, msg]) => /kept for resumed session/.test(String(msg))),
     "destination notified it kept the tree's VM",
@@ -739,10 +753,7 @@ async function runBash(pi, ctx, id) {
   const n2File = path.join(ROOT, "n2-session.jsonl");
   fs.writeFileSync(n2File, JSON.stringify({ type: "session", id: "n-2" }) + "\n");
   const { ctx: n2Ctx } = mkCtx(n2File, "n-2");
-  await nPi.handlers.session_shutdown(
-    { reason: "new", targetSessionFile: n2File },
-    nCtx,
-  );
+  await nPi.handlers.session_shutdown({ reason: "new", targetSessionFile: n2File }, nCtx);
   const n2Pi = newExt();
   const n2Start = n2Pi.handlers.session_start({ reason: "new" }, n2Ctx);
   releaseCreate(); // let both creates resolve
@@ -841,7 +852,11 @@ async function runBash(pi, ctx, id) {
     { path: path.join(WS2, "hello.txt") },
     new AbortController().signal,
   );
-  assert.match(JSON.stringify(readResult), /from ws2/, "host path under the session cwd resolves in the guest");
+  assert.match(
+    JSON.stringify(readResult),
+    /from ws2/,
+    "host path under the session cwd resolves in the guest",
+  );
 
   // C. Quit snapshots the tree; the snapshot records the ws2 workspace.
   await aPi.handlers.session_shutdown({ reason: "quit" }, aCtx);
@@ -869,7 +884,11 @@ async function runBash(pi, ctx, id) {
   const { ctx: dCtx } = mkCtx4(WS); // a different cwd this time
   await dPi.handlers.session_start({ reason: "resume" }, dCtx);
   assert.equal(sdkStub.calls.resume.length, callsBeforeD.resume + 1, "resumed from the snapshot");
-  assert.equal(sdkStub.calls.create.length, callsBeforeD.create, "no fresh VM for a snapshot resume");
+  assert.equal(
+    sdkStub.calls.create.length,
+    callsBeforeD.create,
+    "no fresh VM for a snapshot resume",
+  );
   const dVm = sdkStub.vms.at(-1);
   const dSpec = JSON.parse(
     fs.readFileSync(path.join(ROOT, "cache", "sessions", dVm.id, "spec.json"), "utf8"),
@@ -883,7 +902,11 @@ async function runBash(pi, ctx, id) {
     { path: path.join(WS2, "hello.txt") },
     new AbortController().signal,
   );
-  assert.match(JSON.stringify(readResultD), /from ws2/, "post-resume translation uses the snapshot's workspace");
+  assert.match(
+    JSON.stringify(readResultD),
+    /from ws2/,
+    "post-resume translation uses the snapshot's workspace",
+  );
 
   await dPi.handlers.session_shutdown({ reason: "quit" }, dCtx);
   sdkStub.control.workspaceHost = null;
@@ -977,6 +1000,270 @@ async function runBash(pi, ctx, id) {
   piSettings.global = {};
   piSettings.project = {};
   console.log("scenario 5 (pi settings profile + trust semantics): PASS");
+}
+
+// ---- Scenario 6: version pinning — fail-closed on config/CLI mismatch ---
+// The installed config records its ginger version in a sentinel next to the
+// agent dir (pi-ginger.sh writes it); the CLI on PATH reports its own. On a
+// mismatch (e.g. nix updated ginger but the config-refresh prompt was
+// declined) the extension must disable itself: no VM starts, and tool calls,
+// `!` bash and /ginger all fail with an explanation — never falling back to
+// pi's host-side built-ins.
+{
+  fs.rmSync(path.join(ROOT, "cache"), { recursive: true, force: true });
+
+  const sentinel = path.join(ROOT, ".ginger-version");
+  process.env.GINGER_PI_SENTINEL = sentinel;
+
+  // Fresh module instance per sub-part — a pi restart gets a fresh import.
+  // (The check itself is live, so no cache needs resetting.)
+  const freshExt = async (tag) => {
+    const saved = process.env.GINGER_VERSION;
+    delete process.env.GINGER_VERSION; // guest guard at ext() time
+    try {
+      const mod = await import(`${EXT}?pin=${tag}`);
+      const p = makePi();
+      mod.default(p.api);
+      return p;
+    } finally {
+      if (saved !== undefined) process.env.GINGER_VERSION = saved;
+    }
+  };
+  const mkCtx6 = (file, id, notices) => {
+    const ctx = makeCtx(notices);
+    ctx.sessionManager.getSessionId = () => id;
+    ctx.sessionManager.getSessionFile = () => file;
+    return ctx;
+  };
+
+  // A. Matching sentinel: the pin is transparent — VM starts, no errors.
+  fs.writeFileSync(sentinel, "0.0.1-e2e\n");
+  setGingerEnv();
+  const aPi = await freshExt("a");
+  const aFile = path.join(ROOT, "v6-session.jsonl");
+  fs.writeFileSync(aFile, JSON.stringify({ type: "session", id: "v-6" }) + "\n");
+  const aNotices = [];
+  const aCtx = mkCtx6(aFile, "v-6", aNotices);
+  await aPi.handlers.session_start({ reason: "startup" }, aCtx);
+  const aVm = sdkStub.vms.at(-1);
+  assert.ok(aVm, "matching sentinel: VM starts");
+  assert.ok(!aNotices.some(([k]) => k === "error"), "matching sentinel: no errors");
+
+  // B. Mismatch (the nix update happened; the config refresh was declined):
+  // a cold start disables itself and creates NO VM.
+  fs.writeFileSync(sentinel, "9.9.9\n");
+  const vmsBeforeB = sdkStub.vms.length;
+  const bPi = await freshExt("b");
+  const bFile = path.join(ROOT, "v6-b-session.jsonl");
+  fs.writeFileSync(bFile, JSON.stringify({ type: "session", id: "v-6b" }) + "\n");
+  const bNotices = [];
+  const bCtx = mkCtx6(bFile, "v-6b", bNotices);
+  await bPi.handlers.session_start({ reason: "startup" }, bCtx);
+  assert.ok(
+    bNotices.some(
+      ([k, m]) => k === "error" && /DISABLED/.test(m) && /9\.9\.9/.test(m) && /0\.0\.1-e2e/.test(m),
+    ),
+    "mismatch: session_start announces the disable with both versions",
+  );
+  assert.equal(sdkStub.vms.length, vmsBeforeB, "mismatch: no VM created");
+
+  // B2. Tool calls fail closed: the tool names are still registered (that's
+  // what shadows pi's built-in host tools) but every execute rejects with
+  // the explanation — there is no host fallback path.
+  const bBash = bPi.tools.find((t) => t.name === "bash");
+  assert.ok(bBash, "mismatch: bash tool still registered (shadows the built-in)");
+  await assert.rejects(
+    () =>
+      bBash.execute(
+        "t1",
+        { command: "echo host-should-not-run" },
+        new AbortController().signal,
+        () => {},
+        bCtx,
+      ),
+    /DISABLED/,
+    "mismatch: tool call rejects with the mismatch message",
+  );
+  assert.equal(sdkStub.vms.length, vmsBeforeB, "mismatch: failing tool created no VM");
+
+  // B3. `!` bash (user_bash) must return a FULL replacement result —
+  // returning nothing would let pi run its default host bash.
+  const bBashResult = await bPi.handlers.user_bash({ command: "echo host-should-not-run" }, bCtx);
+  assert.ok(bBashResult?.result, "mismatch: user_bash returns a replacement result");
+  assert.equal(bBashResult.result.exitCode, 1, "mismatch: user_bash result fails");
+  assert.match(bBashResult.result.output, /DISABLED/);
+
+  // B4. /ginger reports the disable instead of starting a VM.
+  await bPi.commands.ginger.handler("", bCtx);
+  assert.ok(
+    bNotices.filter(([k, m]) => k === "error" && /DISABLED/.test(m)).length >= 2,
+    "mismatch: /ginger also announces the disable",
+  );
+  assert.equal(sdkStub.vms.length, vmsBeforeB, "mismatch: /ginger created no VM");
+
+  // C. A VM left running by a pre-mismatch session (the instance that booted
+  // it is still alive — e.g. the mismatch appeared mid-process) must not be
+  // orphaned: the new session's start background-snapshots it (its tree has
+  // a JSONL transcript) and closes it, then disables.
+  const cNotices = [];
+  const cFile = path.join(ROOT, "v6-c-session.jsonl");
+  fs.writeFileSync(cFile, JSON.stringify({ type: "session", id: "v-6c" }) + "\n");
+  const cCtx = mkCtx6(cFile, "v-6c", cNotices);
+  await aPi.handlers.session_start({ reason: "startup", previousSessionFile: aFile }, cCtx);
+  assert.ok(
+    cNotices.some(([k, m]) => k === "error" && /DISABLED/.test(m)),
+    "mismatch with inherited VM: disable announced",
+  );
+  const deadline = Date.now() + 15000;
+  let sidecars = [];
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+    if (aVm.closed) {
+      const dir = path.join(ROOT, "cache", "checkpoints");
+      if (fs.existsSync(dir)) sidecars = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+      if (sidecars.length > 0) break;
+    }
+  }
+  assert.ok(aVm.closed, "inherited VM closed after background snapshot");
+  assert.equal(sidecars.length, 1, "inherited VM was snapshotted (JSONL present)");
+  const sidecar = JSON.parse(
+    fs.readFileSync(path.join(ROOT, "cache", "checkpoints", sidecars[0]), "utf8"),
+  );
+  assert.match(sidecar.label, /pi=v-6/, "snapshot belongs to the inherited tree");
+  delete process.env.GINGER_PI_SENTINEL;
+  console.log("scenario 6 (version pinning, fail-closed): PASS");
+}
+
+// ---- Scenario 7: snapshot/image binding ----------------------------------
+// A qcow contains a frozen guest rootfs (image-baked /etc/pi/agent, init,
+// …), so resuming it under a different ginger image would mix versions.
+// Sidecars record the image they were built on; resume skips mismatches
+// (fresh start, snapshot kept) and seeding refuses them outright.
+{
+  fs.rmSync(path.join(ROOT, "cache"), { recursive: true, force: true });
+  setGingerEnv();
+  const specMod = await import(`${GINGER_SRC}/spec.mjs`);
+  const cpMod = await import(`${GINGER_SRC}/checkpoints.mjs`);
+
+  const ws7 = path.join(ROOT, "ws-img");
+  fs.mkdirSync(ws7);
+  const snapDir = path.join(ROOT, "cache", "checkpoints");
+  fs.mkdirSync(snapDir, { recursive: true });
+  const writeSnap = (piId, file, extra) => {
+    const qcow = path.join(snapDir, file);
+    fs.writeFileSync(qcow, "stub-qcow");
+    const label = specMod.makeLabel({ ws: ws7, pi: piId, v: "0.0.1" });
+    cpMod.writeCheckpointMeta({
+      name: path.basename(file, ".qcow2"),
+      path: qcow,
+      label,
+      spec: { label, workspace: ws7 },
+      createdAt: new Date().toISOString(),
+      ...extra,
+    });
+    return qcow;
+  };
+  const mkCtx7 = (file, id, notices) => {
+    const ctx = makeCtx(notices);
+    ctx.sessionManager.getSessionId = () => id;
+    ctx.sessionManager.getSessionFile = () => file;
+    ctx.cwd = ws7;
+    return ctx;
+  };
+
+  // A. Snapshot built on ANOTHER image: resume is skipped with a warning,
+  // a fresh VM starts, and the old snapshot stays on disk (visible in
+  // `ginger ls`, deletable with `ginger rm` — downgrades stay possible).
+  const resumesBefore = sdkStub.calls.resume.length;
+  const oldQcow = writeSnap("img-1", "old-image.qcow2", {
+    version: "0.0.1",
+    image: "ginger-env:0.0.1",
+  });
+  const aPi = newExt();
+  const aFile = path.join(ROOT, "img-1-session.jsonl");
+  fs.writeFileSync(aFile, JSON.stringify({ type: "session", id: "img-1" }) + "\n");
+  const aNotices = [];
+  const aCtx = mkCtx7(aFile, "img-1", aNotices);
+  await aPi.handlers.session_start({ reason: "startup" }, aCtx);
+  assert.ok(sdkStub.vms.at(-1), "cross-version snapshot: a VM still starts (fresh)");
+  assert.equal(sdkStub.calls.resume.length, resumesBefore, "cross-version snapshot: NOT resumed");
+  assert.ok(
+    aNotices.some(
+      ([k, m]) =>
+        k === "warning" &&
+        /skipping snapshot/.test(m) &&
+        /ginger-env:0\.0\.1(?!-e2e)/.test(m) &&
+        /ginger-env:0\.0\.1-e2e/.test(m),
+    ),
+    "cross-version snapshot: the skip is announced with both images",
+  );
+  assert.ok(fs.existsSync(oldQcow), "cross-version snapshot: old qcow kept on disk");
+  assert.ok(fs.existsSync(`${oldQcow}.json`), "cross-version snapshot: old sidecar kept on disk");
+  await aPi.handlers.session_shutdown({ reason: "quit" }, aCtx);
+  // The quit-snapshot's stale-trim must NOT eat the other version's snapshot
+  // of this same tree — it is the only recorded state for its image.
+  assert.ok(
+    fs.existsSync(oldQcow) && fs.existsSync(`${oldQcow}.json`),
+    "cross-version snapshot: survives the new snapshot's stale-trim",
+  );
+
+  // B. Snapshot built on the CURRENT image (explicit field): resumes as usual.
+  const curQcow = writeSnap("img-2", "cur-image.qcow2", {
+    version: "0.0.1-e2e",
+    image: "ginger-env:0.0.1-e2e",
+  });
+  const bPi = newExt();
+  const bFile = path.join(ROOT, "img-2-session.jsonl");
+  fs.writeFileSync(bFile, JSON.stringify({ type: "session", id: "img-2" }) + "\n");
+  await bPi.handlers.session_start({ reason: "startup" }, mkCtx7(bFile, "img-2", []));
+  assert.equal(sdkStub.calls.resume.length, resumesBefore + 1, "matching image: resumed");
+  assert.equal(sdkStub.calls.resume.at(-1).path, curQcow, "resumed from the right qcow");
+  await bPi.handlers.session_shutdown({ reason: "quit" }, mkCtx7(bFile, "img-2", []));
+
+  // C. Old-style sidecar WITHOUT an image field but a version in the label:
+  // the derived image (ginger-env:<v>) matches — legacy snapshots from the
+  // same version still resume.
+  const legacyQcow = path.join(snapDir, "legacy.qcow2");
+  fs.writeFileSync(legacyQcow, "stub-qcow");
+  const legacyLabel = `ginger:0.0.1-e2e?ws=${encodeURIComponent(ws7)}&pi=img-3`;
+  cpMod.writeCheckpointMeta({
+    name: "legacy",
+    path: legacyQcow,
+    label: legacyLabel,
+    spec: { label: legacyLabel, workspace: ws7 },
+    createdAt: new Date().toISOString(),
+  });
+  const cPi = newExt();
+  const cFile = path.join(ROOT, "img-3-session.jsonl");
+  fs.writeFileSync(cFile, JSON.stringify({ type: "session", id: "img-3" }) + "\n");
+  await cPi.handlers.session_start({ reason: "startup" }, mkCtx7(cFile, "img-3", []));
+  assert.equal(
+    sdkStub.calls.resume.length,
+    resumesBefore + 2,
+    "legacy sidecar: derived image matches, resumed",
+  );
+  assert.equal(sdkStub.calls.resume.at(-1).path, legacyQcow);
+  await cPi.handlers.session_shutdown({ reason: "quit" }, mkCtx7(cFile, "img-3", []));
+
+  // D. GINGER_PI_SNAPSHOT seeding is an explicit choice — a mismatched image
+  // refuses loudly instead of silently starting fresh.
+  process.env.GINGER_PI_SNAPSHOT = oldQcow;
+  try {
+    const dPi = newExt();
+    const dFile = path.join(ROOT, "img-4-session.jsonl");
+    fs.writeFileSync(dFile, JSON.stringify({ type: "session", id: "img-4" }) + "\n");
+    const dCtx = mkCtx7(dFile, "img-4", []);
+    await dPi.handlers.session_start({ reason: "startup" }, dCtx);
+    const dBash = dPi.tools.find((t) => t.name === "bash");
+    await assert.rejects(
+      () => dBash.execute("t1", { command: "true" }, new AbortController().signal, () => {}, dCtx),
+      /refusing to seed a mismatched VM/,
+      "mismatched GINGER_PI_SNAPSHOT: seeding refuses loudly",
+    );
+  } finally {
+    delete process.env.GINGER_PI_SNAPSHOT;
+  }
+  console.log("scenario 7 (snapshot/image binding): PASS");
 }
 
 fs.rmSync(ROOT, { recursive: true, force: true });

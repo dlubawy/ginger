@@ -3,24 +3,28 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { LABEL_PREFIX, checkpointDir, fail } from "./config.mjs";
-import { derivedPiName, parseLabel } from "./spec.mjs";
+import { checkpointDir, fail } from "./config.mjs";
+import { derivedPiName, isGingerLabel, parseLabel } from "./spec.mjs";
 
 /** All ginger checkpoints, newest first. */
 export function listCheckpoints() {
   if (!fs.existsSync(checkpointDir)) return [];
-  return fs
-    .readdirSync(checkpointDir)
-    .filter((f) => f.endsWith(".json"))
-    .map((f) => {
-      try {
-        return JSON.parse(fs.readFileSync(path.join(checkpointDir, f), "utf8"));
-      } catch {
-        return null;
-      }
-    })
-    .filter((m) => m && (m.label ?? "").startsWith(LABEL_PREFIX))
-    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  return (
+    fs
+      .readdirSync(checkpointDir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => {
+        try {
+          return JSON.parse(fs.readFileSync(path.join(checkpointDir, f), "utf8"));
+        } catch {
+          return null;
+        }
+      })
+      // isGingerLabel matches v3 AND legacy labels, so snapshots taken by an
+      // older ginger version stay visible and manageable after an upgrade.
+      .filter((m) => m && isGingerLabel(m.label))
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+  );
 }
 
 /**
